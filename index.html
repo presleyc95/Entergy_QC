@@ -201,6 +201,16 @@ td.sc.miss{color:var(--amber)} td.sc.none,td.sc.na{color:var(--muted)}
 .chipb.on{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
 .ck{display:inline-flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap;cursor:pointer}
 .ocrchip{border:1px solid var(--amber-bar);background:var(--amber-soft);color:var(--amber);border-radius:14px;padding:4px 10px;font-size:13px;font-weight:600}
+.iss.click{cursor:pointer} .iss.click:hover{outline:2px solid var(--blue-soft)}
+.where{font-size:12px;color:var(--blue);font-weight:600;margin-top:3px}
+tr.click .where{white-space:normal}
+.pgwrap{position:relative;display:inline-block;max-width:100%}
+.pgwrap img{display:block;width:100%}
+.hl{position:absolute;border:3px solid #E9A82B;background:rgba(233,168,43,.18);border-radius:4px;box-shadow:0 0 0 4px rgba(233,168,43,.25);pointer-events:none}
+table.cutbl td{font-size:13px;padding-top:4px;padding-bottom:4px} tr.dim td{opacity:.55}
+.skside{max-height:calc(100vh - 90px);overflow:auto;position:sticky;top:calc(env(safe-area-inset-top,0px) + 66px)}
+@media (max-width:1000px){.skside{max-height:none;position:static}}
+#origSel{max-width:190px}
 </style>
 </head>
 <body>
@@ -208,6 +218,7 @@ td.sc.miss{color:var(--amber)} td.sc.none,td.sc.na{color:var(--muted)}
   <div class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13.5 2 4 14h6.5L9 22l10-13h-6.8L13.5 2z"/></svg>Design Package QC</div>
   <span class="spacer"></span>
   <button class="ocrchip" id="ocrState" hidden></button>
+  <select class="btn" id="origSel" hidden aria-label="Open an original PDF"><option value="">Original PDFs…</option></select>
   <button class="btn" id="addMore" hidden>Add PDFs</button>
   <button class="btn" id="clearAll" hidden>Start over</button>
   <button class="iconbtn" id="themeBtn" title="Switch light / dark" aria-label="Switch light or dark theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
@@ -217,7 +228,7 @@ td.sc.miss{color:var(--amber)} td.sc.none,td.sc.na{color:var(--muted)}
 <section class="wrap" id="empty">
   <div class="drop" id="drop">
     <h1>Drop a design package here</h1>
-    <p>Add every PDF for a work order: PoleForeman reports (one combined file is fine), station details, job sketch, work order details, IFC package, estimate summaries, 811 and NJUNS tickets, environmental checklist, JHA, photos and vicinity map. Each file is identified from its contents and tied back to its pole. Nothing leaves your browser.</p>
+    <p>Add every PDF for a work order: PoleForeman reports (one combined file is fine), station details, job sketch, work order details, IFC package, estimate summaries, 811 and NJUNS tickets, DCO forms, voltage drop and flicker worksheets, device ID screenshots, job jacket, environmental checklist, JHA, photos and vicinity map. Each file is identified from its contents and tied back to its pole. Nothing leaves your browser.</p>
     <div class="row"><button class="btn primary" id="pick">Choose PDFs</button><button class="btn" id="restore" hidden>Reopen last package</button></div>
     <ul class="files" id="fileList"></ul>
   </div>
@@ -226,7 +237,7 @@ td.sc.miss{color:var(--amber)} td.sc.none,td.sc.na{color:var(--muted)}
 <main class="wrap" id="app" hidden>
   <section class="head">
     <div><h1 id="hTitle"></h1><div class="sub" id="hSub"></div></div>
-    <span class="spacer"></span><button class="btn primary" id="reviewBtn" hidden>Review</button>
+    <span class="spacer"></span><button class="btn" id="xlsxBtn" hidden>Download findings (Excel)</button><button class="btn primary" id="reviewBtn" hidden>Review</button>
   </section>
   <section class="kpis" id="kpis"></section>
   <section class="panel">
@@ -235,7 +246,7 @@ td.sc.miss{color:var(--amber)} td.sc.none,td.sc.na{color:var(--muted)}
   </section>
   <p class="muted" style="font-size:12px;margin:14px 0 40px">Checks flag items for review; they don't replace an engineer's judgment. Sketch, photo and map text is read from images and should be confirmed by eye. Tolerances are adjustable in Settings.</p>
 </main>
-<div class="lb" id="lb" hidden><div class="bar"><b id="lbTitle"></b><span class="spacer"></span><button class="btn sm" id="lbPrev">← Prev</button><span id="lbN"></span><button class="btn sm" id="lbNext">Next →</button><button class="btn sm" id="lbClose">Close</button></div><div class="pg" id="lbPg"></div></div>
+<div class="lb" id="lb" hidden><div class="bar"><b id="lbTitle"></b><span class="spacer"></span><button class="btn sm" id="lbPrev">← Prev</button><span id="lbN"></span><button class="btn sm" id="lbNext">Next →</button><button class="btn sm" id="lbOrig">Open original PDF</button><button class="btn sm" id="lbClose">Close</button></div><div class="pg" id="lbPg"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -455,6 +466,10 @@ function docClassify(pages, name) {
   const T = allText(pages), n = String(name || '');
   const has = re => re.test(T);
   if (has(/\b250[A-Z] Summary:/) && (has(/Licensed:/) || has(/SW:\s*V/))) return 'pf';
+  if (has(/Change Order \(DCO\)/)) return 'dco';
+  if (has(/Voltage Drop and Flicker Worksheet/)) return 'vd';
+  if (has(/^JOB JACKET\.?$/m)) return 'jacket';
+  if (has(/Device ID Generator/)) return 'deviceid';
   if (has(/IFC: Cover Page/) || (has(/Design Summary Table/) && has(/Station Details/))) return 'ifc';
   if (has(/CUE Estimate Station Details/)) return 'station';
   if (has(/CUE Estimate - Job Cost Summary/)) return 'jobcost';
@@ -590,7 +605,7 @@ function parseIFC(pages) {
     if (/Circuit Bkr ID/.test(txt)) { if (!I.sketchPage) I.sketchPage = p.pageNo; return; }
     if (/CUE Estimate Station Details|Labor Hours :/.test(txt)) { I.stationPages.push(p); return; }
     const hdr = p.lines.find(l => l.cells[0] === 'CUE Station');
-    if (hdr) { parseDesignTable(p, hdr, I); return; }
+    if (hdr) { I.tablePage = I.tablePage || p.pageNo; parseDesignTable(p, hdr, I); return; }
     if (/Brief Description|OH-|COMPATIBLE UNIT|Applies to/i.test(txt) || p.lines.length === 0) { I.specPages.push(p.pageNo); I.specText += '\n' + txt; }
   });
   I.station = I.stationPages.length ? parseStation(I.stationPages) : null;
@@ -757,7 +772,14 @@ function parseEnv(pages, rawItems) {
   if ((m = T.match(/Project Name:\s*(.+)/))) E.meta.name = m[1].trim();
   if ((m = T.match(/Entergy\s+(TX\d+|LA\d+|AR\d+|MS\d+|NO\d+)/))) E.meta.bu = m[1];
   const lines = p.lines.map(l => l.cells);
-  const pm = lines.find(c => c.includes('Project Manager')); if (pm) { E.meta.pm = pm[pm.indexOf('Project Manager') + 1] || ''; if (pm[0] !== 'Project Manager') E.meta.designer = pm[0]; }
+  let pmX = null, pmY = null;
+  p.lines.forEach(l => l.cells.forEach((c, i) => { const m = c.match(/^Project Manager:?\s*(.*)$/); if (m) { E.meta.pm = m[1] || l.cells[i + 1] || ''; pmX = l.xs[i]; pmY = l.y; } }));
+  const pd = p.lines.find(l => l.cells.some(c => /^Project Designer/.test(c)));
+  if (pd) { const lx = pd.xs[pd.cells.findIndex(c => /^Project Designer/.test(c))]; const cand = [];
+    p.lines.forEach(l => l.cells.forEach((c, i) => { if (Math.abs(l.y - pd.y) < 14 && l.xs[i] > lx + 20 && (pmX == null || l.xs[i] < pmX - 5) && !/^Project /.test(c)) cand.push(c); }));
+    const inline = pd.cells.find(c => /^Project Designer\s*:?\s*\S/.test(c) && c.replace(/^Project Designer\s*:?\s*/, '').trim());
+    E.meta.designer = cand[0] || (inline ? inline.replace(/^Project Designer\s*:?\s*/, '') : null); }
+  if (!E.meta.designer && pmY != null) { const l = p.lines.find(x => Math.abs(x.y - pmY) < 3); if (l && !/^Project/.test(l.cells[0])) E.meta.designer = l.cells[0]; }
   const dept = lines.find(c => c.some(x => /^DPF\d+|^[A-Z]{3}\d{2}$/.test(x))); if (dept) E.meta.dept = dept.find(x => /^DPF\d+|^[A-Z]{3}\d{2}$/.test(x));
   return E;
 }
@@ -766,7 +788,9 @@ function parseEnv(pages, rawItems) {
 function parseJHA(pages) {
   const J = {}; const p = pages[0]; if (!p) return J;
   const A = (p.annots || []).filter(a => a.text && a.text.trim());
-  const labels = [['Date:', 'date'], ['Nearest Medical Facility :', 'facility'], ['DOC #', 'doc'], ['Substation:', 'substation'], ['Circuit :', 'circuit'], ['ARC Rating:', 'arc'], ['Work Location "911" Address/GPS Coordinates/County/Parish :', 'address'], ['Crew Leader for Job:', 'crew'], ['Job Scope:', 'scope'], ['Device :', 'device']];
+  const labelish = /:\s*$|^(Date|Rev|Place|for|Completion|Distribution Job Hazard Analysis|Who is|Is this|Has the|including|Substation|Circuit|ARC|DOC|DLOC|Nearest|Work Location|Management|Crew|Job Scope|Designated|Contact|Non Auto|Hot Line|Scouting|Traffic|Environmental|What steps|Emergency|AED|Device)/i;
+  p.lines.forEach(l => l.cells.forEach((c, i) => { if (!labelish.test(c) && !/^_+$/.test(c) && c.length < 80) A.push({ text: c, x: l.xs[i], y: l.y, fromText: true }); }));
+  const labels = [['Date:', 'date'], ['Nearest Medical Facility :', 'facility'], ['DOC #', 'doc'], ['DLOC #', 'doc'], ['Substation:', 'substation'], ['Circuit :', 'circuit'], ['ARC Rating:', 'arc'], ['Work Location "911" Address/GPS Coordinates/County/Parish :', 'address'], ['Crew Leader for Job:', 'crew'], ['Job Scope:', 'scope'], ['Device :', 'device']];
   const used = new Set();
   labels.forEach(([lab, k]) => {
     let pos = null;
@@ -775,8 +799,123 @@ function parseJHA(pages) {
     const cand = A.filter(a => !used.has(a) && Math.abs(a.y - pos.y) < 11 && a.x > pos.x - 2).sort((a, b) => (Math.abs(a.y - pos.y) * 4 + (a.x - pos.x) * 0.05) - (Math.abs(b.y - pos.y) * 4 + (b.x - pos.x) * 0.05))[0];
     if (cand) { J[k] = cand.text.trim(); used.add(cand); }
   });
+  p.lines.forEach(l => l.cells.forEach(c => labels.forEach(([lab, k]) => { const base = lab.replace(/\s*:$/, '').trim(); if (c.startsWith(base) && c.length > lab.length + 1) { const v = c.slice(base.length).replace(/^\s*:?\s*_*\s*/, '').trim(); if (v && !/:$/.test(v) && !J[k]) J[k] = v; } })));
   if (!J.date) { const d = A.find(a => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(a.text.trim())); if (d) J.date = d.text.trim(); }
   return J;
+}
+
+
+/* ================= DCO (Distribution Change Order) ================= */
+function parseDCO(pages) {
+  const forms = [];
+  pages.forEach((p, pi) => {
+    const T = p.lines.map(l => l.text).join('\n');
+    if (!/Change Order \(DCO\)/.test(T)) return;
+    const F = { page: p.pageNo, types: [], activity: [], rows: [], date: null, office: null, dloc: null, toDloc: null, lat: null, lon: null, feeder: null, wo: null, comments: '' };
+    const checked = cells => cells.filter(c => /☒|☑|\[x\]/i.test(c)).map(c => c.replace(/☒|☑|\[x\]/ig, '').replace(/^.*?:\s*/, '').trim());
+    p.lines.forEach((L, li) => {
+      const c = L.cells, t = L.text; let m;
+      const di = c.indexOf('Date:'); if (di >= 0 && c[di + 1]) F.date = c[di + 1];
+      if (/^Equipment Type:|^☐Capacitor|^☒Capacitor/.test(t)) F.types.push(...checked(c));
+      if (/^Activity:/.test(t)) F.activity = checked(c);
+      if (c[0] === 'From:') { c.slice(1).forEach((x, i) => { if (/^\d{8,}$/.test(x)) F.dloc = x; else if (/^\d{1,3}$/.test(x) && !F.office) F.office = x; }); const li2 = c.indexOf('LAT'); if (li2 >= 0) F.latText = c[li2 + 1]; else if ((m = t.match(/LAT\s*(-?\d+\.\d+)/))) F.latText = m[1]; }
+      if (c[0] === 'To:') { c.slice(1).forEach(x => { if (/^\d{8,}$/.test(x)) F.toDloc = x; }); const li2 = c.indexOf('LONG'); if (li2 >= 0) F.lonText = c[li2 + 1]; else if ((m = t.match(/LONG\s*(-?\d+\.\d+)/))) F.lonText = m[1]; }
+      if (/^(Install|Remove)$/.test(c[0])) {
+        const vals = c.slice(1).filter(x => !/^[☐☒☑]/.test(x));
+        const ph = c.filter(x => /^[☒☑]\s*[ABC]$/.test(x)).map(x => x.replace(/[☒☑]\s*/, ''));
+        if (vals.length || ph.length) F.rows.push({ action: c[0], type: vals[0] || '', size: vals[1] || '', equip: vals[2] || '', serial: vals[3] || '', phase: ph.join(''), extra: vals.slice(4) });
+      }
+      if (/Feeder\. ?No/i.test(t)) { for (let k = li; k < Math.min(li + 4, p.lines.length); k++) { const x = p.lines[k].cells.find(z => /^[0-9]{1,3}[A-Za-z]{2,4}\d?$/.test(z)); if (x) { F.feeder = x; break; } } }
+      if ((m = t.match(/^Field Address\/Comments:\s*(.*)$/))) F.comments = m[1];
+      if (c[0] === 'Switch Type:') F.switchType = checked(c);
+      const ii = c.indexOf('Installed #:'); if (ii >= 0 && c[ii + 1] && !/:$/.test(c[ii + 1])) F.installedNo = c[ii + 1];
+    });
+    F.lat = pfNum(F.latText); F.lon = pfNum(F.lonText);
+    // the second page of the form carries the signature / work order line
+    const nxt = pages[pi + 1];
+    if (nxt) nxt.lines.forEach(L => { const i = L.cells.indexOf('Work Order #:'); if (i >= 0) { const v = L.cells[i + 1]; if (v && !/:$/.test(v)) F.wo = v; } const j = L.cells.indexOf('Employee ID:'); if (j >= 0 && L.cells[j + 1]) F.employee = L.cells[j + 1]; });
+    forms.push(F);
+  });
+  return { forms };
+}
+
+/* ================= Voltage drop / flicker worksheet ================= */
+function parseVD(pages, name) {
+  const V = { rows: [], name };
+  const p = pages[0]; if (!p) return V;
+  p.lines.forEach((L, li) => {
+    const c = L.cells;
+    if (/^\d{1,2}$/.test(c[0]) && c.length >= 10 && c.some(x => /%$/.test(x))) {
+      if (c[1] === '0') return;
+      const pi = c.findIndex(x => /%$/.test(x));
+      const ti = c.findIndex((x, i) => i >= 2 && /^[POCD]$/.test(x));
+      const pfi = c.findIndex((x, i) => i > ti && /^0\.\d{2}$/.test(x));
+      const mid = ti >= 0 && pfi > ti ? c.slice(ti + 2, pfi) : [];
+      V.rows.push({ point: +c[0], v: c[1], wire: c[2], inst: ti >= 0 ? c[ti] : '', feet: ti >= 0 ? pfNum(c[ti + 1]) : null, load: mid.length >= 2 ? pfNum(mid[0]) : null, phases: mid.length ? pfNum(mid[mid.length - 1]) : null, pf: pfNum(c[pfi]), cls: c[pfi + 1] || '', cum: pfNum(c[pi]), sect: pfNum(c[pi + 1]), kva: pfNum(c[pi + 2]), cap: pfNum(c[pi + 3]), amps: pfNum(c[pi + 5]) });
+    }
+    const oi = c.indexOf('Transformer Over Ride'); if (oi >= 0) { for (let k = li + 1; k < li + 4 && k < p.lines.length; k++) { const x = p.lines[k].cells.find(z => /^\d+(\.\d+)?$/.test(z) && p.lines[k].cells.length <= 2); if (x) { V.override = pfNum(x); break; } } }
+    const mi = c.indexOf('Largest Motor or AC'); if (mi >= 0) V.motor = pfNum(c[mi + 1]);
+    const si = c.indexOf('Starting kVA'); if (si >= 0) V.starting = pfNum(c[si + 1]);
+    if (/^Revised/.test(L.text)) V.revised = L.text.replace(/^Revised\s*/, '');
+  });
+  const x = V.rows.find(r => r.v === 'XFMR');
+  V.xfmr = x ? pfNum(x.wire) : null;
+  V.kind = /flicker/i.test(name || '') ? 'flicker' : /divers|drop|vd/i.test(name || '') ? 'drop' : (x && x.load == null ? 'flicker' : 'drop');
+  V.maxCum = V.rows.length ? Math.max(...V.rows.map(r => r.cum || 0)) : null;
+  return V;
+}
+
+/* ================= Job jacket ================= */
+function parseJacket(pages) {
+  const J = { wo: null };
+  const p = pages[0]; if (!p) return J;
+  p.lines.forEach((L, li) => {
+    const c = L.cells;
+    if (/^\d{7,}$/.test(c[0]) && c.length >= 6 && !J.wo) {
+      J.wo = c[0]; J.workType = c[1]; J.subType = c[2]; J.designer = c[3];
+      const di = c.findIndex(x => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(x)); if (di >= 0) J.targetFinish = c[di];
+      const oi = c.findIndex((x, i) => i > di && /^\d{4}$/.test(x)); if (oi >= 0) { J.office = c[oi]; J.address = c[oi + 1]; J.city = c[oi + 2]; J.state = c[oi + 3]; J.kit = c[oi + 4]; }
+    }
+    if (c[0] === 'Local Office Name') { const n = p.lines[li + 1]; if (n) { J.officeName = n.cells[0]; J.network = n.cells[1]; J.networkCode = n.cells[2]; J.region = n.cells[3]; } }
+  });
+  pages.forEach(pp => pp.lines.forEach(L => { const m = L.text.match(/workorderid\s*=\s*(\d+)/); if (m) J.workorderid = m[1]; }));
+  return J;
+}
+function parseJacketOCR(lines) {
+  lines = (lines || []).slice().sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  const O = {};
+  const T = lines.map(l => l.text).join('\n');
+  const below = (L, n) => { const out = []; let last = L; for (const l of lines) { if (out.length >= n) break; if (l.y0 <= last.y0 + 2 || Math.abs(l.x0 - L.x0) > 45) continue; if (l.y0 - last.y1 > (L.h || 30) * 2.2) break; out.push(l.text); last = l; } return out; };
+  const field = (re, n) => { const L = lines.find(l => re.test(l.text)); if (!L) return null; const after = L.text.replace(re, '').replace(/^\s*[:;]\s*/, '').trim(); return after ? [after, ...below(L, n - 1)] : below(L, n); };
+  let v, m;
+  if ((m = T.match(/Man\s*Hours\s*[:;]\s*([\d.,]+)/i))) O.manHours = pfNum(m[1]);
+  if ((v = field(/^Upstream\s*Device\s*[:;]?/i, 1)) && v[0]) O.upstream = v[0].trim();
+  if ((m = T.match(/\b(\d+(?:\.\d+)?)\s*kV\s*(OH|UG)?\b/i))) O.voltage = m[0].trim();
+  if ((v = field(/^Designer\s*Name\s*[:;]?/i, 1)) && v[0]) O.designerName = v[0].trim();
+  if ((v = field(/^Designer\s*Company\s*[:;]?/i, 1)) && v[0]) O.designerCompany = v[0].trim();
+  if ((v = field(/^(?:Physical\s*)?Location\s*[:;]?/i, 2))) O.location = v.join(' ').replace(/\s+/g, ' ').trim();
+  if ((m = T.match(/Commit\s*[:;]\s*([\d\/]+)/i))) O.commit = m[1];
+  const cj = lines.find(l => /CONJ?U?N?CTION/i.test(l.text));
+  if (cj) O.conjunction = [...new Set(lines.filter(l => l.y0 >= cj.y0 - 5 && l.y0 < cj.y0 + 400 && Math.abs(l.x0 - cj.x0) < 60).map(l => (l.text.match(/\b\d{8}\b/) || [])[0]).filter(Boolean))];
+  return O;
+}
+
+/* ================= Maximo device ID generator ================= */
+function parseDeviceIDs(pages) {
+  const D = { ids: [] };
+  pages.forEach(p => {
+    const e = { page: p.pageNo }; let next = '';
+    p.lines.forEach((L, li) => {
+      const c = L.cells, t = L.text;
+      if (/Default Site:/.test(t)) { e.user = c[0]; e.site = (t.match(/Default Site:\s*(\S+)/) || [])[1]; }
+      if (/^\d{1,2}\/\d{1,2}\/\d{2}, /.test(c[0]) && !e.when) e.when = c[0];
+      if (t === 'Work Order') next = 'wo'; else if (t === 'Device Type') next = 'type'; else if (t === 'Device ID') next = 'id';
+      else if (next) { if (next === 'wo') { e.wo = c[0]; e.title = c[1] || ''; } else if (next === 'type') e.type = t; else if (next === 'id' && /^[A-Z]{1,3}\d{4,}$/i.test(c[0])) e.id = c[0].toUpperCase(); next = ''; }
+    });
+    if (e.id) D.ids.push(e);
+  });
+  D.wo = D.ids[0]?.wo || null;
+  return D;
 }
 
 /* ================= OCR helpers (tesseract TSV) ================= */
@@ -816,7 +955,7 @@ function ocrLabelBlock(lines) {
   return { id: g(/^([A-Z]{0,3}\d{2,4})\s*$/m), dloc: (g(/DLOC\s*[:;.]?\s*([0-9OoIl]{6,})/i) || '').replace(/[Oo]/g, '0').replace(/[Il]/g, '1') || null, lat: g(/Lat\w*\s*[:;.]?\s*(-?[\d.]{6,})/i), lon: g(/Lon\w*\s*[:;.]?\s*(-?[\d.]{6,})/i), text: txt };
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { pfPageLines, pfNum, pfParse, pfSplit, parseGuyRow, docClassify, parseStation, parseWO, parseIFC, parseSketch, parseJobCost, parseCostDist, parseLabor, parseMaterial, parse811, parseNJUNS, parseEnv, parseJHA, tsvLines, ocrCallouts, ocrLabelBlock };
+if (typeof module !== 'undefined' && module.exports) module.exports = { parseDCO, parseVD, parseJacket, parseJacketOCR, parseDeviceIDs, pfPageLines, pfNum, pfParse, pfSplit, parseGuyRow, docClassify, parseStation, parseWO, parseIFC, parseSketch, parseJobCost, parseCostDist, parseLabor, parseMaterial, parse811, parseNJUNS, parseEnv, parseJHA, tsvLines, ocrCallouts, ocrLabelBlock };
 
 </script>
 <script>
@@ -832,9 +971,9 @@ const near = (a,b,t) => a!=null && b!=null && Math.abs(a-b) <= t;
 try { if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; } catch(e){}
 
 /* ---------- settings ---------- */
-const DEF = {poleWarn:80, poleFail:85, eqWarn:98, eqFail:100, lead:0.5, commSep:40, spanFt:2, spanPct:1, ang:5, hag250c:60, coordFt:15, leadTol:1, degTol:3, attTol:2, ocrAuto:1, repl250c:1};
+const DEF = {poleWarn:80, poleFail:85, eqWarn:98, eqFail:100, lead:0.5, commSep:40, spanFt:2, spanPct:1, ang:5, hag250c:60, coordFt:15, leadTol:0.3, degTol:3, attTol:2, ocrAuto:1, repl250c:1, vdMax:5, flkMax:5, dcoMi:0.5, sv:2};
 let S = {...DEF};
-try { Object.assign(S, JSON.parse(localStorage.getItem('pfqc:settings')||'{}')); } catch(e){}
+try { const saved = JSON.parse(localStorage.getItem('pfqc:settings')||'{}'); if (!saved.sv || saved.sv<2){ delete saved.leadTol; saved.sv=2; } Object.assign(S, saved); } catch(e){}
 const saveS = () => { try{ localStorage.setItem('pfqc:settings', JSON.stringify(S)); }catch(e){} };
 
 /* ---------- storage (IndexedDB) ---------- */
@@ -857,7 +996,7 @@ let FIL = {status:'', rules:'', q:'', review:false, sev:'', cat:''};
 const KINDS = {
   pf:{n:'PoleForeman reports', need:true}, station:{n:'Station Details & Job Instructions', need:true}, ifc:{n:'IFC package'}, sketch:{n:'Job sketch', need:true},
   wo:{n:'Work Order Details', need:true}, jobcost:{n:'Job Cost Summary'}, costdist:{n:'Cost Distribution Summary'}, labor:{n:'Labor Summary'}, material:{n:'Material Summary'},
-  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, unknown:{n:'Not recognized'}
+  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, dco:{n:'DCO form'}, vd:{n:'Voltage drop / flicker worksheet'}, jacket:{n:'Job jacket'}, deviceid:{n:'Device ID generator'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, unknown:{n:'Not recognized'}
 };
 
 /* ---------- pdf helpers ---------- */
@@ -902,7 +1041,7 @@ async function pfRecords(pdf, pages, docId, fileName, onStep){
       if (pn===imgPage){ img.d3 = cropCanvas(cv,0.422,0.394,0.99,0.744).toDataURL('image/jpeg',0.85); img.polar = cropCanvas(cv,0.055,0.35,0.405,0.86).toDataURL('image/jpeg',0.8); }
     }
     delete R.statusTargets;
-    out.push({ id: R.label || seg.footer || fileName, fileName: seg.footer || fileName, docId, pageNos: seg.pages.map(p=>p.pageNo), R, pf, img });
+    out.push({ id: R.label || (seg.footer&&(seg.footer.match(/^([A-Za-z]*\d+)/)||[])[1]) || seg.footer || fileName, fileName: seg.footer || fileName, docId, pageNos: seg.pages.map(p=>p.pageNo), R, pf, img });
   }
   return out;
 }
@@ -932,6 +1071,10 @@ async function readDoc(file, onStep){
   else if (K==='njuns') rec.data = parseNJUNS(pages);
   else if (K==='env') rec.data = parseEnv(pages);
   else if (K==='jha') rec.data = parseJHA(pages);
+  else if (K==='dco') rec.data = parseDCO(pages);
+  else if (K==='vd') rec.data = parseVD(pages, file.name);
+  else if (K==='deviceid') rec.data = parseDeviceIDs(pages);
+  else if (K==='jacket') { rec.data = parseJacket(pages); const cv=await renderPage(pdf,1,1.4); rec.data.img = cv.toDataURL('image/jpeg',0.8); }
   else if (K==='photos') { const ps=[]; for (let i=1;i<=pdf.numPages;i++){ onStep&&onStep(`Photo ${i} of ${pdf.numPages}`); const cv=await renderPage(pdf,i,1.1); ps.push({page:i, img:cv.toDataURL('image/jpeg',0.72)}); } rec.data = {pages:ps}; }
   else if (K==='vicinity') { const cv=await renderPage(pdf,1,1.6); rec.data = {img:cv.toDataURL('image/jpeg',0.8)}; }
   else rec.data = {};
@@ -950,7 +1093,7 @@ async function handleFiles(files){
     try {
       const rec = await readDoc(f, s=>st.textContent=s);
       // a newer copy of the same single-instance document replaces the old one
-      const single = !['pf','t811','njuns','unknown'].includes(rec.kind);
+      const single = !['pf','t811','njuns','unknown','dco','vd','deviceid','jacket'].includes(rec.kind);
       const dup = DOCS.findIndex(d => d.name===rec.name || (single && d.kind===rec.kind));
       if (dup>=0){ dbDel(DOCS[dup].id); PDFC.delete(DOCS[dup].id); DOCS.splice(dup,1); }
       DOCS.push(rec); dbPut(rec);
@@ -971,6 +1114,10 @@ dbAll().then(recs=>{ if (recs.length){ const b=$('#restore'); b.hidden=false; b.
 $('#themeBtn').onclick=()=>{ const cur=document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); const n=cur==='dark'?'light':'dark'; document.documentElement.dataset.theme=n; try{localStorage.setItem('pfqc:theme',n);}catch(e){} };
 try{ const t=localStorage.getItem('pfqc:theme'); if(t) document.documentElement.dataset.theme=t; }catch(e){}
 
+/* ---------- original PDFs and Excel ---------- */
+function openOriginal(docId, page){ const d=DOCS.find(x=>x.id===docId); if(!d) return; const url=URL.createObjectURL(new Blob([d.bytes],{type:'application/pdf'})); const w=window.open(url+(page?`#page=${page}`:''),'_blank'); if(!w){ const a=document.createElement('a'); a.href=url; a.download=d.name; a.click(); } setTimeout(()=>URL.revokeObjectURL(url), 120000); }
+let XLSXP=null; function xlsxLib(){ if (window.XLSX) return Promise.resolve(window.XLSX); if (!XLSXP) XLSXP = loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js').then(()=>window.XLSX); return XLSXP; }
+
 /* ---------- text reading (OCR) for the sketch, photos and vicinity map ---------- */
 let TESS = null, OCRBUSY = false;
 function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('Could not load the text reader from '+new URL(src).host)); document.head.appendChild(s); }); }
@@ -984,7 +1131,7 @@ async function tess(onP){
 let ocrP = null;
 async function ocrTSV(cv){ const w = await tess(p=>ocrP&&ocrP(p)); const r = await w.recognize(cv, {}, {tsv:true, text:false, blocks:false, hocr:false}); return r.data.tsv || ''; }
 function ocrStatus(t){ const el=$('#ocrState'); if(!el) return; el.hidden=!t; el.textContent=t||''; }
-function needsOCR(){ return DOCS.filter(d => (d.kind==='sketch' && !d.data.ocr) || (d.kind==='ifc' && d.data.sketchPage && !d.data.ocr && !DOCS.some(x=>x.kind==='sketch')) || (d.kind==='photos' && d.data.pages.some(p=>!p.ocr)) || (d.kind==='vicinity' && !d.data.ocr)); }
+function needsOCR(){ return DOCS.filter(d => (d.kind==='sketch' && !d.data.ocr) || (d.kind==='ifc' && d.data.sketchPage && !d.data.ocr && !DOCS.some(x=>x.kind==='sketch')) || (d.kind==='photos' && d.data.pages.some(p=>!p.ocr)) || (d.kind==='vicinity' && !d.data.ocr) || (d.kind==='jacket' && !d.data.ocr)); }
 function queueOCR(force){ if (!force && !S.ocrAuto) return; runOCR(); }
 async function runOCR(){
   if (OCRBUSY) return; const todo = needsOCR(); if (!todo.length) { toast('All text has been read'); return; }
@@ -1000,6 +1147,10 @@ async function runOCR(){
       } else if (d.kind==='photos'){
         for (const pg of d.data.pages){ if (pg.ocr) continue; ocrStatus(`Reading photo label ${pg.page} of ${d.data.pages.length}`); ocrP=null;
           const cv = await renderPage(pdf, pg.page, 3.5); const lines = tsvLines(await ocrTSV(cropCanvas(cv,0,0,0.42,0.15))); pg.ocr = ocrLabelBlock(lines); }
+      } else if (d.kind==='jacket'){
+        ocrStatus('Reading job jacket…'); ocrP = p=>ocrStatus(`Reading job jacket ${Math.round(p*100)}%`);
+        const cv = await renderPage(pdf, 1, 3); const lines = tsvLines(await ocrTSV(cv));
+        d.data.ocr = { ...parseJacketOCR(lines), callouts: ocrCallouts(lines) };
       } else if (d.kind==='vicinity'){
         ocrStatus('Reading vicinity map labels…'); ocrP = p=>ocrStatus(`Reading vicinity map ${Math.round(p*100)}%`);
         const cv = await renderPage(pdf, 1, 2.6); const lines = tsvLines(await ocrTSV(cv));
@@ -1085,12 +1236,17 @@ function sketchSrc(){
   if (PKG.ifc && PKG.ifc.data.sketch) return { K:PKG.ifc.data.sketch, img:PKG.ifc.data.sketchImg, ocr:PKG.ifc.data.ocr, doc:PKG.ifc };
   return null;
 }
-let SK = null, ST = null, WO = null;
-const nkey = s => String(s||'').toUpperCase().replace(/\s+/g,'').replace(/^([A-Z]*)0*(\d+)$/,'$1$2');
+let SK = null, ST = null, WO = null, JK = null;
+// PL01, P1, P-01, POLE 1 and 01 all mean pole P01
+const nkey = s => { const t=String(s||'').toUpperCase().replace(/[\s_\-.#]+/g,''); const m=t.match(/^(?:P|PL|PO|POL|POLE|STA|STN|STATION)?0*(\d{1,4})([A-Z]?)$/); return m ? 'P'+(+m[1])+m[2] : t; };
+const canon = s => { const k=nkey(s); const m=k.match(/^P(\d+)([A-Z]?)$/); return m ? 'P'+m[1].padStart(2,'0')+m[2] : String(s); };
 
 /* ---------- tie everything to each pole ---------- */
+const MULTI = ['t811','njuns','pf','unknown','dco','vd','deviceid','jacket'];
 function rebuild(){
-  PKG = {}; DOCS.forEach(d=>{ if (['t811','njuns','pf','unknown'].includes(d.kind)) (PKG[d.kind]=PKG[d.kind]||[]).push(d); else PKG[d.kind]=d; });
+  computeWO();
+  PKG = {}; DOCS.forEach(d=>{ if (MULTI.includes(d.kind)) (PKG[d.kind]=PKG[d.kind]||[]).push(d); else if (!PKG[d.kind] || PKG[d.kind].foreign || !d.foreign) PKG[d.kind]=d; });
+  JK = (PKG.jacket||[]).find(d=>!d.foreign) || null;
   POLES=[]; const dupPF=[];
   (PKG.pf||[]).forEach(d=>d.data.poles.forEach(r=>{ const i=POLES.findIndex(p=>p.id===r.id); if(i>=0){ dupPF.push(r.id); POLES[i]=r; } else POLES.push(r); }));
   POLES.sort((a,b)=>natural(a.id,b.id));
@@ -1100,24 +1256,25 @@ function rebuild(){
   if (!CUR || !STN.find(s=>s.id===CUR)) CUR = STN[0]?.id;
   if (!SKCUR || !STN.find(s=>s.id===SKCUR)) SKCUR = STN[0]?.id;
   $('#empty').hidden=true; $('#app').hidden=false; $('#addMore').hidden=$('#clearAll').hidden=false;
-  const title = WO?.meta.title || SK?.K.fields.title || PKG.ifc?.data.meta.maximo || '';
-  const wo = WO?.meta.wo || SK?.K.fields.wo || PKG.ifc?.data.meta.maximo || ST?.meta.wo || '';
+  const title = WO?.meta.title || SK?.K.fields.title || PKG.env?.data.meta.name || '';
+  const wo = DOMWO || WO?.meta.wo || SK?.K.fields.wo || PKG.ifc?.data.meta.maximo || ST?.meta.wo || '';
   $('#hTitle').textContent = wo ? `WO ${wo}` : `${STN.length} poles`;
   $('#hSub').textContent = [title, `${STN.length} pole${STN.length===1?'':'s'}`, `${DOCS.length} document${DOCS.length===1?'':'s'}`].filter(Boolean).join(' · ');
   renderKpis(); render();
 }
 function buildStations(){
   const map = new Map(), order = [];
-  const get = id => { const k=nkey(id); if (!map.has(k)) { map.set(k, {id, key:k, src:{}}); order.push(k); } return map.get(k); };
+  const get = id => { const k=nkey(id); if (!map.has(k)) { map.set(k, {id:canon(id), key:k, src:{}}); order.push(k); } return map.get(k); };
   (ST?.order||[]).forEach(get); (WO?.noteOrder||[]).forEach(get); (PKG.ifc?.data.order||[]).forEach(get);
   const ifcSt = PKG.station && PKG.ifc?.data.station;
   STN = [];
-  map.forEach(s=>{ s.st = ST?.stations[s.id] || null; s.stIfc = ifcSt ? ifcSt.stations[s.id]||null : null; s.wo = WO?.notes[s.id]||null; s.ifc = PKG.ifc?.data.rows[s.id]||null; });
-  // PoleForeman: by label first, then by location
-  const unmatched = [];
-  POLES.forEach(P=>{ const s=map.get(nkey(P.id)); if (s && !s.pf) s.pf=P; else unmatched.push(P); });
-  unmatched.forEach(P=>{ const h=baseRule(P.R).head; let best=null; map.forEach(s=>{ if (s.pf) return; const la=s.wo?.lat??s.ifc?.lat, lo=s.wo?.lon??s.ifc?.lon; const d=distFt(la,lo,h.lat,h.lon); if (d!=null && d<30 && (!best||d<best.d)) best={s,d}; }); if (best){ best.s.pf=P; best.s.pfByLoc=true; } else { const s=get(P.id); s.pf=P; } });
+  const byKey = (obj) => { const o={}; Object.keys(obj||{}).forEach(k=>{ o[nkey(k)]=obj[k]; }); return o; };
+  const stK=byKey(ST?.stations), siK=byKey(ifcSt?.stations), woK=byKey(WO?.notes), ifK=byKey(PKG.ifc?.data.rows);
+  map.forEach(s=>{ s.st = stK[s.key] || null; s.stIfc = ifcSt ? siK[s.key]||null : null; s.wo = woK[s.key]||null; s.ifc = ifK[s.key]||null; });
+  // PoleForeman: matched by label only (PoleForeman coordinates aren't reliable)
+  POLES.forEach(P=>{ const s=map.get(nkey(P.id)); if (s && !s.pf) s.pf=P; else { const n=get(P.id); if (!n.pf) n.pf=P; } });
   (SK?.K.labels||[]).forEach(l=>{ const s=map.get(nkey(l.id)) || get(l.id); s.skLabel=l; });
+  map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
   (SK?.ocr?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
   const all = order.map(k=>map.get(k));
   // photos
@@ -1134,7 +1291,7 @@ function buildStations(){
       agI: cus.filter(c=>c.wf==='I'&&CU.ag(c)), agR: cus.filter(c=>c.wf==='R'&&CU.ag(c)),
       has250C: !!R?.rules['250C'], anchors: b?.anchors||[], spanGuys: b?.spanGuys||[], equip: b?.equipment||[], comms: b ? b.spans.flatMap(x=>x.comms) : [],
       pfSpec: specOf(R?.poleSpec), setting: b?.head.setting ?? null,
-      lat: s.wo?.lat ?? s.ifc?.lat ?? b?.head.lat ?? null, lon: s.wo?.lon ?? s.ifc?.lon ?? b?.head.lon ?? null,
+      lat: s.wo?.lat ?? s.ifc?.lat ?? null, lon: s.wo?.lon ?? s.ifc?.lon ?? null,
       dloc: s.wo?.dloc || s.ifc?.dloc || s.sk?.dloc || null,
     };
     s.d.repl = !!s.d.poleInst;
@@ -1144,8 +1301,8 @@ function buildStations(){
 }
 
 /* ---------- scope trace: each piece of work, across every document ---------- */
-const COLS = [['cu','Station details'],['wo','WO notes'],['ifc','IFC summary'],['sk','Job sketch'],['pf','PoleForeman']];
-const COLN = {cu:'station details', wo:'WO notes', ifc:'IFC design summary', sk:'job sketch', pf:'PoleForeman report'};
+const COLS = [['cu','Station details'],['wo','WO notes'],['ifc','IFC design table'],['sk','Job sketch'],['pf','PoleForeman']];
+const COLN = {cu:'station details', wo:'WO notes', ifc:'IFC design table', sk:'job sketch', pf:'PoleForeman report'};
 const C = { ok:(t)=>({s:'ok',t}), bad:(t)=>({s:'bad',t}), warn:(t)=>({s:'warn',t}), miss:(t)=>({s:'miss',t:t||'not called out'}), na:(t)=>({s:'',t:t||''}), none:(t)=>({s:'none',t}) };
 function scopeOf(s){
   if (s._scope) return s._scope;
@@ -1308,15 +1465,59 @@ const isoDate = s => { if (!s) return null; let m = String(s).match(/(\d{1,2})\/
 const digits = s => (String(s||'').match(/\d{6,}/)||[])[0] || null;
 function runChecks(dupPF){
   ISS = []; STN.forEach(s=>{ delete s._scope; });
-  const add = (pole, sev, cat, title, detail, rule, src) => ISS.push({pole:pole||'Project', sev, cat, title, detail:detail||'', rule:rule||'', src:src||''});
+  const add = (pole, sev, cat, title, detail, rule, src, loc) => ISS.push({pole:pole||'Project', sev, cat, title, detail:detail||'', rule:rule||'', src:src||'', loc:loc||null});
   PF2ST = {}; STN.forEach(s=>{ if (s.pf) PF2ST[s.pf.id] = s.id; });
   const addP = (P, sev, cat, title, detail, rule) => add(P ? (PF2ST[P.id]||P.id) : null, sev, cat, title, detail, rule, 'PoleForeman');
   if (POLES.length) pfChecks(addP); else CONN = [];
   (dupPF||[]).forEach(id=>add(PF2ST[id]||id,'warn','Report',`More than one PoleForeman report for ${id}`,'The last one read is used.','', 'PoleForeman'));
   crossChecks(add);
+  ISS.forEach(i=>{ if (!i.loc) i.loc = locFor(i); });
   const stat = id => { const is=ISS.filter(x=>x.pole===id); return { s: is.some(x=>x.sev==='bad')?'bad':is.some(x=>x.sev==='warn')?'warn':'ok', c:{bad:is.filter(x=>x.sev==='bad').length,warn:is.filter(x=>x.sev==='warn').length,info:is.filter(x=>x.sev==='info').length} }; };
   STN.forEach(s=>{ const r=stat(s.id); s._status=r.s; s._counts=r.c; });
   POLES.forEach(P=>{ const r=stat(PF2ST[P.id]||P.id); P._status=r.s; P._counts=r.c; });
+}
+
+
+/* ---------- helpers for package-level checks ---------- */
+let DOMWO = null;
+function docWO(d){ const x=d.data||{}; let v=null;
+  switch(d.kind){ case 'wo': v=x.meta?.wo; break; case 'station': v=x.meta?.wo; break; case 'ifc': v=x.meta?.maximo; break; case 'sketch': v=x.sketch?.fields.wo; break; case 'jobcost': v=x.wo; break; case 'env': v=x.meta?.code; break; case 'njuns': v=x.misc; break; case 't811': v=x.job; break; case 'jacket': v=x.wo; break; case 'deviceid': v=x.wo; break; case 'dco': v=(x.forms||[]).find(f=>f.wo)?.wo; break; }
+  return { content: digits(v), file: (d.name.match(/WO[_\s-]?(\d{7,9})/i)||[])[1] || null }; }
+function computeWO(){
+  const cnt = {}; DOCS.forEach(d=>{ d._wo = docWO(d); const w = d._wo.content || d._wo.file; if (w) cnt[w] = (cnt[w]||0) + (d.kind==='wo'?5:d._wo.content?2:1); });
+  DOMWO = Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0] || null;
+  DOCS.forEach(d=>{ const w=d._wo.content||d._wo.file; d.foreign = !!(DOMWO && w && w!==DOMWO); });
+}
+function sameDesigner(a,b){
+  const toks = v => String(v||'').toLowerCase().replace(/techserv|:|-|\(|\)/g,' ').split(/\s+/).filter(Boolean);
+  const A=toks(a), B=toks(b); if (!A.length||!B.length) return true;
+  const users = t => t.filter(x=>/^[a-z]+\d*$/.test(x)).map(x=>x.replace(/\d+$/,''));
+  const names = t => { const w=t.filter(x=>/^[a-z]{2,}$/.test(x)); return w.length>=2 ? [{f:w[0], l:w[w.length-1]}] : []; };
+  const match = (P,Q) => { for (const n of names(P)) { if (names(Q).some(m=>m.l===n.l)) return true; for (const u of users(Q)) if (u.length>=4 && u[0]===n.f[0] && (n.l.startsWith(u.slice(1)) || u.slice(1).startsWith(n.l.slice(0,5)))) return true; } for (const u of users(P)) for (const w of users(Q)) if (u===w && u.length>=4) return true; return false; };
+  return match(A,B) || match(B,A);
+}
+function docLoc(d, extra){ if (!d) return null; if (SK && d===SK.doc && !extra?.page) return {doc:d.id, page:SK.K.page, find:extra?.find}; return {doc:d.id, page:extra?.page||1, find:extra?.find||null}; }
+function locFor(i){
+  const s = STN.find(x=>x.id===i.pole); const src=String(i.src||'').toLowerCase();
+  const stDoc = PKG.station || (PKG.ifc?.data.station ? PKG.ifc : null);
+  const latest811 = (PKG.t811||[]).slice().sort((a,b)=>String(a.data.dateObj).localeCompare(String(b.data.dateObj))).pop();
+  const pfFind = i.cat==='Guying' ? 'Anchor' : i.cat==='Line' ? 'Span' : i.cat==='Equipment' ? 'Equipment' : i.cat==='Loading' ? 'Pole Strength' : null;
+  if (s){
+    if (/station/.test(src) && s.st && stDoc) return {doc:stDoc.id, page:s.st.pages[0], find:(s.names.find(n=>n[0]==='station details')||[])[1]||s.id};
+    if (/wo notes/.test(src) && s.wo && PKG.wo) return {doc:PKG.wo.id, page:s.wo.page, find:s.wo.dloc||s.id};
+    if (/ifc/.test(src) && PKG.ifc) return {doc:PKG.ifc.id, page:PKG.ifc.data.tablePage||3, find:s.ifc?.dloc||s.id};
+    if (/sketch/.test(src) && SK) return {sketch:s.id};
+    if (/poleforeman/.test(src) && s.pf){ const r=s.pf.R.rules[i.rule]; return {doc:s.pf.docId, page:(r?r.firstPage:s.pf.pageNos[0]), find:pfFind}; }
+    if (/photo/.test(src) && s.ph && PKG.photos) return {doc:PKG.photos.id, page:s.ph.page};
+    if (/njuns/.test(src) && PKG.njuns) return {doc:PKG.njuns[0].id, page:1, find:s.d.dloc};
+    if (/811/.test(src) && latest811) return {doc:latest811.id, page:1};
+    if (s.pf && i.cat!=='Location') return {doc:s.pf.docId, page:(s.pf.R.rules[i.rule]||{}).firstPage||s.pf.pageNos[0], find:pfFind};
+    if (s.st && stDoc) return {doc:stDoc.id, page:s.st.pages[0], find:s.id};
+  }
+  const c = i.cat;
+  const d = c==='Estimate' ? (PKG.jobcost||PKG.costdist||PKG.labor||PKG.wo) : c==='Materials' ? (PKG.material||PKG.wo) : c==='Environmental' ? PKG.env : c==='JHA' ? PKG.jha : c==='811' ? latest811 : c==='NJUNS' ? (PKG.njuns||[])[0] : c==='IFC' ? PKG.ifc : c==='Vicinity map' ? PKG.vicinity : c==='Photos' ? PKG.photos : ['Line','Project','Report','Loading'].includes(c) && /poleforeman/.test(src) ? (PKG.pf||[])[0] : null;
+  if (d) return {doc:d.id, page: c==='IFC' ? (d.data.specPages?.[0]||1) : 1, find: c==='Environmental' ? (i.title.match(/question (\d+)/)||[])[1]+'.' : null};
+  return null;
 }
 
 function crossChecks(add){
@@ -1359,12 +1560,14 @@ function crossChecks(add){
     }
     /* locations */
     const pfh = baseRule(s.pf?.R)?.head;
-    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['IFC summary',s.ifc?.lat,s.ifc?.lon,'bad'],['PoleForeman',pfh?.lat,pfh?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
+    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['IFC summary',s.ifc?.lat,s.ifc?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
     s._locs = locs;
     if (locs.length>1){ const [rn,rla,rlo]=locs[0]; locs.slice(1).forEach(([n,la,lo,sev])=>{ const dd=distFt(rla,rlo,la,lo); if (dd>S.coordFt) add(id, sev, 'Location', `${n[0].toUpperCase()+n.slice(1)} location is ${dd>5280?f1(dd/5280)+' miles':f0(dd)+' ft'} from the ${rn}`, `${rn}: ${rla}, ${rlo} · ${n}: ${la}, ${lo}`, '', n); }); }
     const dl = [['WO notes',s.wo?.dloc,'bad'],['IFC summary',s.ifc?.dloc,'bad'],['sketch callout',s.sk?.dloc,'warn'],['photo label',s.ph?.ocr?.dloc,'warn'],['NJUNS asset',s.nj?.[0]?.a.pole,'bad']].filter(x=>x[1]);
     s._dlocs = dl;
     if (dl.length>1) dl.slice(1).forEach(([n,v,sev])=>{ if (v!==dl[0][1]) add(id, sev, 'Location', `DLOC on the ${n} (${v}) doesn't match the ${dl[0][0]} (${dl[0][1]})`, '', '', n); });
+    const nm = [...(s.names||[])]; if (s.sk?.id) nm.push(['sketch callout', s.sk.id]); if (s.ph?.ocr?.id) nm.push(['photo label', s.ph.ocr.id]);
+    nm.forEach(([src,raw])=>{ if (raw && raw!==s.id) add(id,'warn','Naming',`The ${src} calls this pole "${raw}" instead of "${s.id}"`,'Matched as the same pole. Use one naming convention across the package.','',src); });
     if (SK && !s.skLabel && (s.st||s.wo)) add(id,'warn','Sketch',`${id} label not found on the job sketch`,'','','job sketch');
     if (SK?.ocr && !s.sk && (s.st||s.wo)) add(id,'info','Sketch',`No callout box found for ${id} on the sketch`,'Text reading looks for a box starting with the pole label and DLOC. Check the Sketch review tab.','','job sketch');
     if (PKG.photos && !s.ph && (s.st||s.wo)) add(id,'info','Photos',`No photo matched to ${id}`,'','','photos');
@@ -1373,22 +1576,45 @@ function crossChecks(add){
   /* project facts */
   const wordNorm = v => String(v||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
   const addrNorm = v => wordNorm(v).split(' ').slice(0,3).join(' ');
-  const designerNorm = v => { const w=wordNorm(v).split(' '); return w.length>1 ? (w[0][0]+w[w.length-1]) : w[0]; };
+  
   const t811 = (PKG.t811||[]).map(d=>d.data), nj = (PKG.njuns||[]).map(d=>d.data);
   const gl = WO?.meta.gl ? (WO.meta.gl.split('~').find(x=>/^C\w{6,}$/.test(x))||null) : null;
+  const J0 = JK?.data, JO = JK?.data.ocr || {};
+  const V = (label, v, doc, extra) => [label, v, doc, extra];
   FACTS = [
-    ['Maximo WO', digits, [['WO details',WO?.meta.wo],['Station details',ST?.meta.wo],['IFC',PKG.ifc?.data.meta.maximo],['Sketch',SK?.K.fields.wo],['Job cost',PKG.jobcost?.data.wo],['Environmental',PKG.env?.data.meta.code],...nj.map((n,i)=>[`NJUNS ${n.ticket||i+1}`,n.misc]),...t811.map(t=>[`811 ${t.ticket}`,t.job])]],
-    ['PowerPlan WO', wordNorm, [['IFC',PKG.ifc?.data.meta.powerplan],['Sketch',SK?.K.fields.powerplan],['WO GL account',gl]]],
-    ['Title', wordNorm, [['WO details',WO?.meta.title],['Sketch',SK?.K.fields.title],['Environmental',PKG.env?.data.meta.name]]],
-    ['Address', addrNorm, [['WO details',WO?.meta.address],['Sketch',SK?.K.fields.address],['JHA',PKG.jha?.data.address],...nj.map(n=>['NJUNS',n.assets[0]?`${n.assets[0].house} ${n.assets[0].street}`:null])]],
-    ['Substation', wordNorm, [['Sketch',SK?.K.fields.sub],['IFC',PKG.ifc?.data.meta.substation],['JHA',PKG.jha?.data.substation]]],
-    ['Circuit / feeder', wordNorm, [['Sketch',SK?.K.fields.circuit],['JHA',PKG.jha?.data.circuit]]],
-    ['ARC flash', v=>pfNum(v), [['Sketch',SK?.K.fields.arc],['JHA',PKG.jha?.data.arc]]],
-    ['Designer', designerNorm, [['IFC',PKG.ifc?.data.meta.designer],['Sketch',SK?.K.fields.designer],['Environmental',PKG.env?.data.meta.designer],...nj.map(n=>['NJUNS',n.contact]),...t811.slice(-1).map(t=>['811',t.contact])]],
-    ['Pole count', v=>v, [['WO details',WO?.meta.poleCount],['Station details',ST?.order.length],['IFC summary',PKG.ifc?.data.order.length],['PoleForeman',POLES.length||null],['Sketch labels',SK?.K.labels.length]]],
-    ['Target finish', isoDate, [['WO details',WO?.meta.targetFinish],['Job cost commit',PKG.jobcost?.data.commit],...nj.map(n=>['NJUNS requested',n.requested])]],
-  ].map(([name, norm, vals])=>{ const v = vals.filter(x=>x[1]!=null && x[1]!==''); const ns=[...new Set(v.map(x=>String(norm(x[1]))))]; return {name, vals:v, ok: ns.length<=1}; });
-  FACTS.forEach(f=>{ if (!f.ok) add(null, f.name==='Designer'||f.name==='Target finish'?'warn':'bad', 'Project', `${f.name} doesn't match across documents`, f.vals.map(v=>`${v[0]}: ${v[1]}`).join(' · ')); });
+    ['Maximo WO', digits, [V('WO details',WO?.meta.wo,PKG.wo),V('Station details',ST?.meta.wo,PKG.station||PKG.ifc),V('IFC',PKG.ifc?.data.meta.maximo,PKG.ifc),V('Sketch',SK?.K.fields.wo,SK?.doc),V('Job cost',PKG.jobcost?.data.wo,PKG.jobcost),V('Environmental',PKG.env?.data.meta.code,PKG.env),V('Job jacket',J0?.wo,JK),...(PKG.njuns||[]).map(d=>V(`NJUNS ${d.data.ticket||''}`,d.data.misc,d)),...(PKG.t811||[]).map(d=>V(`811 ${d.data.ticket}`,d.data.job,d)),...(PKG.deviceid||[]).filter(d=>!d.foreign).map(d=>V('Device IDs',d.data.wo,d))]],
+    ['PowerPlan WO', wordNorm, [V('IFC',PKG.ifc?.data.meta.powerplan,PKG.ifc),V('Sketch',SK?.K.fields.powerplan,SK?.doc),V('WO GL account',gl,PKG.wo)]],
+    ['Title', wordNorm, [V('WO details',WO?.meta.title,PKG.wo),V('Sketch',SK?.K.fields.title,SK?.doc),V('Environmental',PKG.env?.data.meta.name,PKG.env)]],
+    ['Address', addrNorm, [V('WO details',WO?.meta.address&&(WO.meta.address+(WO.meta.city?', '+WO.meta.city:'')),PKG.wo),V('Sketch',SK?.K.fields.address,SK?.doc),V('JHA',PKG.jha?.data.address,PKG.jha),V('Job jacket',J0?.address&&`${J0.address}, ${J0.city||''} ${J0.state||''}`,JK),V('Job jacket location',JO.location,JK),...(PKG.njuns||[]).map(d=>V('NJUNS',d.data.assets[0]?`${d.data.assets[0].house} ${d.data.assets[0].street}`:null,d))]],
+    ['Substation', wordNorm, [V('Sketch',SK?.K.fields.sub,SK?.doc),V('IFC',PKG.ifc?.data.meta.substation,PKG.ifc),V('JHA',PKG.jha?.data.substation,PKG.jha)]],
+    ['Circuit / feeder', wordNorm, [V('Sketch',SK?.K.fields.circuit,SK?.doc),V('JHA',PKG.jha?.data.circuit,PKG.jha),...(PKG.dco||[]).flatMap(d=>d.data.forms.map((f,i)=>V(`DCO ${i+1}`,f.feeder,d,{page:f.page,find:f.feeder}))),V('Job jacket upstream device',JO.upstream&&/^\d+[A-Z]{2,4}$/i.test(JO.upstream)?JO.upstream:null,JK)]],
+    ['ARC flash', v=>pfNum(v), [V('Sketch',SK?.K.fields.arc,SK?.doc),V('JHA',PKG.jha?.data.arc,PKG.jha)]],
+    ['Voltage', v=>pfNum(v), [V('IFC',PKG.ifc?.data.meta.voltage,PKG.ifc),V('Job jacket',JO.voltage,JK)]],
+    ['Designer', null, [V('IFC',PKG.ifc?.data.meta.designer,PKG.ifc),V('Sketch',SK?.K.fields.designer,SK?.doc),V('Environmental',PKG.env?.data.meta.designer,PKG.env),V('Job jacket',J0?.designer,JK),V('Job jacket name',JO.designerName,JK),...(PKG.njuns||[]).map(d=>V('NJUNS',d.data.contact,d)),...(PKG.t811||[]).slice(-1).map(d=>V('811',d.data.contact,d))]],
+    ['Pole count', v=>v, [V('WO details',WO?.meta.poleCount,PKG.wo),V('Station details',ST?.order.length,PKG.station||PKG.ifc),V('IFC design table',PKG.ifc?.data.order.length,PKG.ifc),V('PoleForeman',POLES.length||null,(PKG.pf||[])[0]),V('Sketch labels',SK?.K.labels.length,SK?.doc)]],
+    ['Target finish', isoDate, [V('WO details',WO?.meta.targetFinish,PKG.wo),V('Job cost commit',PKG.jobcost?.data.commit,PKG.jobcost),V('Job jacket',J0?.targetFinish,JK),...(PKG.njuns||[]).map(d=>V('NJUNS requested',d.data.requested,d))]],
+  ].map(([name, norm, vals])=>{
+    const v = vals.filter(x=>x[1]!=null && x[1]!=='' && !(x[2]&&x[2].foreign));
+    let odd = [];
+    if (name==='Designer'){ odd = v.filter(x=>!v.some(y=>y!==x && sameDesigner(x[1],y[1])) && v.length>1); }
+    else { const ns=v.map(x=>String(norm(x[1]))); const cnt={}; ns.forEach(n=>cnt[n]=(cnt[n]||0)+1); const mode=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0]; odd = v.filter((x,i)=>ns[i]!==mode); }
+    return {name, vals:v, odd, ok: !odd.length};
+  });
+  FACTS.forEach(f=>{ if (!f.ok){ const o=f.odd[0]; add(null, ['Designer','Target finish','Voltage'].includes(f.name)?'warn':'bad', 'Project', `${f.name} doesn't match across documents`, f.vals.map(v=>`${v[0]}: ${v[1]}`).join(' · '), '', o[0], docLoc(o[2], o[3])); } });
+  // ZIP codes in addresses
+  const zips = FACTS.find(f=>f.name==='Address')?.vals.map(v=>[v, (String(v[1]).match(/\b(\d{3,6})\s*$/)||[])[1]]).filter(x=>x[1]) || [];
+  zips.forEach(([v,z])=>{ if (z.length!==5) add(null,'warn','Project',`${v[0]} address ZIP "${z}" isn't 5 digits`, v[1], '', v[0], docLoc(v[2], {find:z})); });
+  const z5 = [...new Set(zips.map(x=>x[1]).filter(z=>z.length===5))]; if (z5.length>1) add(null,'warn','Project',`Address ZIP codes differ: ${z5.join(', ')}`, zips.map(([v,z])=>`${v[0]}: ${z}`).join(' · '));
+  // package: documents from another work order and file naming
+  DOCS.forEach(d=>{ const w=d._wo||{}; const loc={doc:d.id, page:1, find:w.content||w.file};
+    if (d.foreign) add(null,'bad','Package',`${d.name} is for WO ${w.content||w.file}, not WO ${DOMWO}`,'This document looks like it belongs to a different job. It is excluded from the comparisons.','', KINDS[d.kind].n, loc);
+    else if (w.content && w.file && w.content!==w.file) add(null,'warn','Naming',`${d.name}: file name says WO ${w.file}, the document says WO ${w.content}`,'','',KINDS[d.kind].n, loc);
+    if (/enviromental/i.test(d.name)) add(null,'info','Naming',`File name "${d.name}" misspells Environmental`,'','',KINDS[d.kind].n,{doc:d.id,page:1});
+  });
+  if (JK){ if (JO.conjunction?.length) add(null,'info','Project',`Job jacket: works in conjunction with WO ${JO.conjunction.join(', ')}`,'Confirm coordination with those work orders.','', 'Job jacket', {doc:JK.id,page:1,find:'CONJUCTION'});
+    const tl = WO?.meta.title || SK?.K.fields.title || PKG.env?.data.meta.name; if (JO.upstream && tl){ const tok=(JO.upstream.match(/\d{3,}|[0-9]+[A-Z]{2,4}/i)||[])[0]; if (tok && !tl.toUpperCase().includes(tok.toUpperCase())) add(null,'warn','Project',`Job jacket upstream device ${JO.upstream} isn't in the project title`, tl,'','Job jacket',{doc:JK.id,page:1}); }
+    const hrs = PKG.jobcost?.data.hours ?? PKG.jobcost?.data.onsite; if (JO.manHours && hrs && Math.abs(JO.manHours-hrs)>1) add(null,'info','Estimate',`Job jacket man hours (${f2(JO.manHours)}) differ from the estimate labor hours (${f2(hrs)})`,'','','Job jacket',{doc:JK.id,page:1});
+  }
   if (WO?.meta.startDloc && dlocs.size && !dlocs.has(WO.meta.startDloc)) add(null,'warn','Project',`WO start DLOC ${WO.meta.startDloc} isn't one of the poles`,'');
   if (WO?.meta.endDloc && dlocs.size && !dlocs.has(WO.meta.endDloc)) add(null,'warn','Project',`WO end DLOC ${WO.meta.endDloc} isn't one of the poles`,'');
   if (PKG.jha){ const J=PKG.jha.data; if (J.doc && dlocs.size && !dlocs.has(J.doc)) add(null,'warn','JHA',`JHA DOC # ${J.doc} isn't one of the pole DLOCs`,''); if (!J.date) add(null,'info','JHA','JHA has no date',''); if (!J.facility) add(null,'warn','JHA','JHA nearest medical facility is blank',''); }
@@ -1464,6 +1690,59 @@ function crossChecks(add){
     used.forEach(u=>{ if (!new RegExp(`\\b${u}\\b`,'i').test(txt)) add(null,'info','IFC',`No construction spec text found for ${u}`, 'Spec pages that are images can\u2019t be read. Confirm the sheet is in the IFC package.'); }); }
   if (PKG.vicinity?.data.ocr){ const ids=PKG.vicinity.data.ocr.ids.map(nkey); const miss=STN.filter(s=>(s.st||s.wo)&&!ids.includes(s.key)).map(s=>s.id); if (miss.length) add(null,'info','Vicinity map',`Labels not read on the vicinity map: ${miss.join(', ')}`,'Only called-out poles may be labeled.'); }
   if (PKG.photos){ const n=PKG.photos.data.pages.length, m=STN.filter(s=>s.st||s.wo).length; if (m && n!==m) add(null,'info','Photos',`${n} photo pages for ${m} poles`,''); }
+
+  /* DCO forms */
+  const devDocs = (PKG.deviceid||[]).filter(d=>!d.foreign), devIds = new Set(devDocs.flatMap(d=>d.data.ids.map(x=>x.id)));
+  const area = [...STN.filter(x=>x.d.lat!=null).map(x=>[x.d.lat,x.d.lon]), ...[JK?.data.ocr?.callouts, PKG.vicinity?.data.ocr?.callouts, SK?.ocr?.callouts].flatMap(cs=>(cs||[]).map(c=>[pfNum(c.lat),pfNum(c.lon)])).filter(x=>x[0]!=null&&x[1]!=null)];
+  const knownDlocs = new Set([...STN.map(x=>x.d.dloc).filter(Boolean), ...[JK?.data.ocr?.callouts, PKG.vicinity?.data.ocr?.callouts].flatMap(cs=>(cs||[]).map(c=>c.dloc))]);
+  const dcoEquip = new Set();
+  (PKG.dco||[]).forEach(d=>d.data.forms.forEach((F,fi)=>{
+    const tag = `DCO ${fi+1}${F.dloc?` (DLOC ${F.dloc})`:''}`, loc={doc:d.id, page:F.page, find:F.dloc};
+    const s = F.dloc ? STN.find(x=>x.d.dloc===F.dloc) : null;
+    if (!F.dloc) add(null,'bad','DCO',`${tag} has no DLOC`,'','','DCO',loc);
+    else if (STN.some(x=>x.d.dloc) && !s) add(null,'bad','DCO',`${tag}: DLOC isn't one of the poles in this package`, [...knownDlocs].slice(0,12).join(', '),'','DCO',loc);
+    if (F.lat==null || F.lon==null) add(s?.id,'bad','DCO',`${tag} is missing GPS coordinates`,'','','DCO',loc);
+    else {
+      if (F.lat<25 || F.lat>37 || F.lon>-86 || F.lon<-107) add(s?.id,'bad','DCO',`${tag} coordinates ${F.lat}, ${F.lon} aren't in the service area`,'','','DCO',{...loc,find:F.latText});
+      if (s && s.d.lat!=null){ const dd=distFt(s.d.lat,s.d.lon,F.lat,F.lon); if (dd>S.coordFt) add(s.id,'bad','DCO',`${tag} location is ${dd>5280?f1(dd/5280)+' miles':f0(dd)+' ft'} from ${s.id}`,`DCO ${F.lat}, ${F.lon} · WO/IFC ${s.d.lat}, ${s.d.lon}`,'','DCO',{...loc,find:F.latText}); }
+      else if (area.length){ const dd=Math.min(...area.map(a=>distFt(a[0],a[1],F.lat,F.lon))); if (dd>S.dcoMi*5280) add(null,'bad','DCO',`${tag} location is ${f1(dd/5280)} miles from the project poles`,`DCO ${F.lat}, ${F.lon}. Check for a typo in the latitude or longitude.`,'','DCO',{...loc,find:F.latText}); }
+    }
+    if (!F.date) add(null,'warn','DCO',`${tag} has no date`,'','','DCO',loc);
+    if (!F.wo) add(null,'info','DCO',`${tag}: work order # is blank`,'','','DCO',{doc:d.id,page:F.page+1,find:'Work Order #'});
+    if (!F.types.length) add(null,'warn','DCO',`${tag}: no equipment type is checked`,'','','DCO',{...loc,find:'Equipment Type'});
+    if (!F.rows.length) add(null,'bad','DCO',`${tag} has no install or remove line filled in`,'','','DCO',loc);
+    F.rows.forEach(r=>{
+      const eq = (r.equip||'').toUpperCase(); if (eq) dcoEquip.add(eq);
+      if (!eq) add(s?.id,'warn','DCO',`${tag}: ${r.action.toLowerCase()} ${r.type} has no company equipment number`,'','','DCO',loc);
+      else if (!/^[A-Z]\d{6}$/.test(eq)) add(s?.id,'warn','DCO',`${tag}: equipment number ${r.equip} isn't a letter plus 6 digits`,'Device IDs from the Maximo generator look like F512669.','','DCO',{...loc,find:r.equip});
+      if (eq && devIds.size && !devIds.has(eq)) add(s?.id,'bad','DCO',`${tag}: equipment number ${r.equip} isn't one of the generated device IDs`,`Generated: ${[...devIds].join(', ')}`,'','DCO',{...loc,find:r.equip});
+      if (!r.phase) add(s?.id,'warn','DCO',`${tag}: no phase checked for ${r.type}`,'','','DCO',loc);
+      if (/fus|lfus|cutout/i.test(r.type) && !(F.switchType||[]).length) add(s?.id,'info','DCO',`${tag}: fuse install but the switch section (switch type, installed #) is blank`,'','','DCO',{...loc,find:'Switch Type'});
+      if (s && /fus|lfus/i.test(r.type) && !s.d.cus.some(c=>c.wf==='I' && /FUSE|FSW|CUTOUT/i.test(c.cu+' '+c.desc))) add(s.id,'warn','DCO',`${tag} installs a fuse but ${s.id} has no fuse/cutout install CU`,'','','DCO',loc);
+    });
+  }));
+  if (PKG.dco) devDocs.forEach(d=>d.data.ids.forEach(x=>{ if (!dcoEquip.has(x.id)) add(null,'warn','DCO',`Generated device ID ${x.id} isn't on any DCO`,`${x.type||''}, generated ${x.when||''}`,'','Device IDs',{doc:d.id,page:x.page,find:x.id}); }));
+  if (PKG.dco) STN.forEach(s=>{ if (s.d.cus.some(c=>c.wf==='I' && /FUSE|FSW/i.test(c.cu+' '+c.desc)) && !(PKG.dco||[]).some(d=>d.data.forms.some(f=>f.dloc===s.d.dloc))) add(s.id,'warn','DCO',`${s.id} installs a fuse but has no DCO`,'','','station details'); });
+
+  /* voltage drop / flicker */
+  const vds = (PKG.vd||[]).filter(d=>!d.foreign);
+  const xfDesign = [...new Set(STN.flatMap(s=>s.d.cus.filter(c=>CU.xfmr(c)&&c.wf!=='R').map(c=>CU.kva(c))).filter(Boolean))];
+  vds.forEach(d=>{ const Vd=d.data, nm = Vd.kind==='flicker'?'Flicker':'Voltage drop', lim = Vd.kind==='flicker'?S.flkMax:S.vdMax, loc={doc:d.id,page:1};
+    if (Vd.maxCum!=null && Vd.maxCum>lim) add(null,'warn','Calcs',`${nm} worksheet: ${Vd.maxCum}% at the end of the run is over ${lim}%`, Vd.rows.map(r=>`point ${r.point}: ${r.cum}%`).join(' · '),'',nm+' worksheet',{...loc,find:Vd.maxCum+'%'});
+    const x = Vd.rows.find(r=>r.v==='XFMR');
+    if (x && x.cap && x.kva>x.cap) add(null,'warn','Calcs',`${nm} worksheet: ${x.kva} kVA through the ${Vd.xfmr} kVA transformer is over its ${x.cap} kVA capacity`,'','',nm+' worksheet',{...loc,find:String(x.kva)});
+    if (Vd.override && Vd.xfmr && Vd.override!==Vd.xfmr) add(null,'warn','Calcs',`${nm} worksheet: transformer override ${Vd.override} kVA differs from the ${Vd.xfmr} kVA transformer row`,'','',nm+' worksheet',loc);
+    if (Vd.kind==='flicker'){ if (x && x.load) add(null,'warn','Calcs','Flicker worksheet still has load on the transformer row','Flicker runs should remove all load other than the motor starting kVA.','','Flicker worksheet',loc);
+      Vd.rows.filter(r=>r.v!=='XFMR').forEach(r=>{ if (Vd.starting && r.load!=null && r.load!==Vd.starting) add(null,'warn','Calcs',`Flicker worksheet point ${r.point}: ${r.load} kVA isn't the ${Vd.starting} kVA motor starting load`,'','','Flicker worksheet',loc); }); }
+    if (xfDesign.length && Vd.xfmr && !xfDesign.includes(Vd.xfmr)) add(null,'warn','Calcs',`${nm} worksheet uses a ${Vd.xfmr} kVA transformer; station details install ${xfDesign.join(', ')} kVA`,'','',nm+' worksheet',loc);
+  });
+  const dr = vds.find(d=>d.data.kind==='drop'), fl = vds.find(d=>d.data.kind==='flicker');
+  if (dr && fl){
+    if (dr.data.xfmr!==fl.data.xfmr) add(null,'bad','Calcs',`Voltage drop sheet uses a ${dr.data.xfmr} kVA transformer, flicker sheet uses ${fl.data.xfmr} kVA`,'','','Flicker worksheet',{doc:fl.id,page:1});
+    dr.data.rows.forEach(r=>{ const o=fl.data.rows.find(z=>z.point===r.point); if (!o){ add(null,'warn','Calcs',`Point ${r.point} is on the voltage drop sheet but not the flicker sheet`,'','','Flicker worksheet',{doc:fl.id,page:1}); return; }
+      if (r.feet!==o.feet) add(null,'warn','Calcs',`Point ${r.point}: voltage drop sheet uses ${r.feet} ft, flicker sheet uses ${o.feet} ft`,'The two runs should model the same service.','','Flicker worksheet',{doc:fl.id,page:1,find:String(o.feet)});
+      if (r.v!=='XFMR' && r.wire!==o.wire) add(null,'warn','Calcs',`Point ${r.point}: wire is ${r.wire} on the voltage drop sheet, ${o.wire} on the flicker sheet`,'','','Flicker worksheet',{doc:fl.id,page:1,find:o.wire}); });
+  }
 }
 
 /* ---------- PoleForeman checks ---------- */
@@ -1479,7 +1758,7 @@ function pfChecks(add){
     const R = P.R;
     // file name vs label vs rules
     const fnLabel = (P.fileName.match(/^([A-Za-z]*\d+[A-Za-z]?)_/)||[])[1];
-    if (fnLabel && R.label && fnLabel.toUpperCase()!==R.label.toUpperCase()) add(P,'bad','Report','File name and pole label disagree',`File ${P.fileName} but the report is labeled ${R.label}.`);
+    if (fnLabel && R.label && fnLabel.toUpperCase()!==R.label.toUpperCase()) { if (nkey(fnLabel)===nkey(R.label)) add(P,'warn','Naming',`Report file name uses ${fnLabel} but the report is labeled ${R.label}`,`${P.fileName}. Same pole, different naming.`); else add(P,'bad','Report','File name and pole label are different poles',`File ${P.fileName} but the report is labeled ${R.label}.`); }
     const fnRules = (P.fileName.match(/250[A-Z]/g)||[]);
     fnRules.forEach(r=>{ if (!R.rules[r]) add(P,'bad','Report',`File name says ${r} but the report has no ${r} analysis`,P.fileName); });
     if (!R.rules['250B']) add(P,'bad','Report','No 250B analysis in this report','');
@@ -1557,7 +1836,6 @@ function pfChecks(add){
       if (mb.horz!=null && mc.horz!=null && mc.horz < mb.horz) add(P,'info','250B vs 250C','250C horizontal loading is lower than 250B',`250B ${mb.horz}% · 250C ${mc.horz}%`);
     }
     // project consistency
-    if (majSw && R.sw && `${R.sw} / DB ${R.db}`!==majSw) add(P,'warn','Project',`Run on a different software/database version`,`${R.sw} / DB ${R.db} vs project ${majSw}`);
     if (majEd && R.edition && R.edition!==majEd) add(P,'warn','Project',`NESC edition ${R.edition} differs from the project (${majEd})`,'');
     if (majGr && R.grade && R.grade!==majGr) add(P,'warn','Project',`Grade differs from the project`,`${R.grade} vs ${majGr}`);
     if (majDi && R.district && R.district!==majDi) add(P,'warn','Project',`Loading district differs from the project`,`${R.district} vs ${majDi}`);
@@ -1687,7 +1965,7 @@ function table(id, cols, rows, opts={}){
   const col = cols.find(c=>c.k===s.k)||cols[0];
   rows = rows.slice().sort((a,b)=>{ const x=col.sv?col.sv(a):col.v(a), y=col.sv?col.sv(b):col.v(b); const c=(typeof x==='number'&&typeof y==='number')?x-y:natural(x??'',y??''); return s.asc?c:-c; });
   TABLES[id] = {cols, rows};
-  return `<div class="tscroll"><table><thead><tr>${cols.map(c=>`<th class="s ${c.num?'num':''} ${s.k===c.k?'sorted':''}" data-sort="${c.k}" data-t="${id}">${esc(c.l)}${s.k===c.k?(s.asc?' ▲':' ▼'):''}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr class="${opts.click?'click':''}" ${opts.click?`data-pole="${esc(opts.click(r))}"`:''}>${cols.map(c=>`<td class="${c.num?'num':''}">${c.h?c.h(r):esc(c.v(r)??'–')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  return `<div class="tscroll"><table><thead><tr>${cols.map(c=>`<th class="s ${c.num?'num':''} ${s.k===c.k?'sorted':''}" data-sort="${c.k}" data-t="${id}">${esc(c.l)}${s.k===c.k?(s.asc?' ▲':' ▼'):''}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr class="${opts.click||opts.attr?'click':''}" ${opts.click?`data-pole="${esc(opts.click(r))}"`:''} ${opts.attr?opts.attr(r):''}>${cols.map(c=>`<td class="${c.num?'num':''}">${c.h?c.h(r):esc(c.v(r)??'–')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 async function copyTable(id){
   const t=TABLES[id]; if(!t) return;
@@ -1862,23 +2140,23 @@ function pfBody(P){
   return h;
 }
 
+function locText(l){ if (!l) return ''; if (l.sketch) return 'Job sketch'; const d=DOCS.find(x=>x.id===l.doc); return d ? `${d.name}${l.page?`, p. ${l.page}`:''}` : ''; }
 function renderIssues(){
   let rows = ISS.slice();
   if (FIL.sev) rows = rows.filter(i=>i.sev===FIL.sev);
   if (FIL.cat) rows = rows.filter(i=>i.cat===FIL.cat);
-  const q=FIL.q.trim().toLowerCase(); if (q) rows=rows.filter(i=>(i.pole+' '+i.title+' '+i.detail+' '+i.cat).toLowerCase().includes(q));
+  const q=FIL.q.trim().toLowerCase(); if (q) rows=rows.filter(i=>(i.pole+' '+i.title+' '+i.detail+' '+i.cat+' '+i.src).toLowerCase().includes(q));
   const cats=[...new Set(ISS.map(i=>i.cat))].sort();
   const cols=[
-    {k:'sev',l:'Severity',v:r=>({bad:'Error',warn:'Warning',info:'Note'}[r.sev]),sv:r=>({bad:0,warn:1,info:2}[r.sev]),h:r=>`<span class="pill ${r.sev}">${({bad:'Error',warn:'Warning',info:'Note'}[r.sev])}</span>`},
-    {k:'pole',l:'Pole',v:r=>r.pole},{k:'rule',l:'Rule',v:r=>r.rule},{k:'cat',l:'Area',v:r=>r.cat},
-    {k:'title',l:'Finding',v:r=>r.title,h:r=>`<b style="font-weight:600;white-space:normal">${esc(r.title)}</b>`},
-    {k:'src',l:'Source',v:r=>r.src},
-    {k:'detail',l:'Detail',v:r=>r.detail,h:r=>`<span class="muted" style="white-space:normal;display:block;min-width:220px">${esc(r.detail)}</span>`},
+    {k:'sev',l:'Severity',v:r=>SEVN[r.sev],sv:r=>({bad:0,warn:1,info:2}[r.sev]),h:r=>`<span class="pill ${r.sev}">${SEVN[r.sev]}</span>`},
+    {k:'pole',l:'Pole',v:r=>r.pole,h:r=>r.pole==='Project'?'<span class="muted">Package</span>':`<button class="link" data-pole="${esc(r.pole)}">${esc(r.pole)}</button>`},{k:'cat',l:'Area',v:r=>r.cat},
+    {k:'title',l:'Finding',v:r=>r.title,h:r=>`<b style="font-weight:600;white-space:normal">${esc(r.title)}</b>${r.detail?`<span class="muted" style="white-space:normal;display:block;min-width:240px;font-size:13px">${esc(r.detail)}</span>`:''}`},
+    {k:'where',l:'Where',v:r=>locText(r.loc),h:r=>r.loc?`<span class="where">${esc(locText(r.loc))} →</span>`:'<span class="muted">–</span>'},
   ];
   const c=s=>ISS.filter(i=>i.sev===s).length;
-  return `<div class="viewbar"><h2>Issues</h2><button class="btn sm" data-copy="issues">Copy table</button><div class="hint">${c('bad')} errors, ${c('warn')} warnings, ${c('info')} notes across ${STN.length} poles.</div></div>
+  return `<div class="viewbar"><h2>Issues</h2><button class="btn sm primary" data-xlsx="1">Download for designer (Excel)</button><button class="btn sm" data-copy="issues">Copy table</button><div class="hint">${c('bad')} errors, ${c('warn')} warnings, ${c('info')} notes. Click a finding to open the document where it is.</div></div>
   <div class="filters"><input type="search" data-fil="q" value="${esc(FIL.q)}" placeholder="Search findings" aria-label="Search findings"><select data-fil="sev" aria-label="Severity"><option value="">All severities</option><option value="bad" ${FIL.sev==='bad'?'selected':''}>Errors</option><option value="warn" ${FIL.sev==='warn'?'selected':''}>Warnings</option><option value="info" ${FIL.sev==='info'?'selected':''}>Notes</option></select><select data-fil="cat" aria-label="Area"><option value="">All areas</option>${cats.map(x=>`<option ${FIL.cat===x?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
-  ${rows.length?table('issues', cols, rows, {sort:'sev', click:r=>r.pole==='Project'?(STN[0]?.id||''):r.pole}):'<p class="muted">Nothing matches.</p>'}`;
+  ${rows.length?table('issues', cols, rows, {sort:'sev', attr:r=>`data-iss="${ISS.indexOf(r)}"`}):'<p class="muted">Nothing matches.</p>'}`;
 }
 
 
@@ -1886,15 +2164,18 @@ function renderIssues(){
 const statusPill = s => s==='bad'?'<span class="pill bad">Attention</span>':s==='warn'?'<span class="pill warn">Review</span>':'<span class="pill ok">Clean</span>';
 const pfPill = v => v==='fail'?'<span class="pill bad">✕ PF fail</span>':v==='warn'?'<span class="pill warn">! PF warning</span>':v==='pass'?'<span class="pill ok">✓ PF pass</span>':'<span class="pill none">not shown</span>';
 const SEVN = {bad:'Error', warn:'Warning', info:'Note'};
-function issHtml(i){ return `<div class="iss ${i.sev}"><b>${esc(i.title)}</b> ${i.rule?`<span class="pill ${i.rule==='250C'?'c':'info'}">${esc(i.rule)}</span>`:''} <span class="pill none">${esc(i.cat)}</span>${i.src?` <span class="muted" style="font-size:12px">${esc(i.src)}</span>`:''}${i.detail?`<div class="w">${esc(i.detail)}</div>`:''}</div>`; }
-const woKey = () => WO?.meta.wo || ST?.meta.wo || SK?.K.fields.wo || 'pkg';
+function issHtml(i){ const n=ISS.indexOf(i); return `<div class="iss ${i.sev} ${i.loc?'click':''}" ${i.loc?`data-iss="${n}" title="Open ${esc(locText(i.loc))}"`:''}><b>${esc(i.title)}</b> ${i.rule?`<span class="pill ${i.rule==='250C'?'c':'info'}">${esc(i.rule)}</span>`:''} <span class="pill none">${esc(i.cat)}</span>${i.src?` <span class="muted" style="font-size:12px">${esc(i.src)}</span>`:''}${i.detail?`<div class="w">${esc(i.detail)}</div>`:''}${i.loc?`<div class="where">${esc(locText(i.loc))} →</div>`:''}</div>`; }
+const woKey = () => DOMWO || WO?.meta.wo || ST?.meta.wo || SK?.K.fields.wo || 'pkg';
 let SKCHK = {}; try { SKCHK = JSON.parse(localStorage.getItem('pfqc:skchk')||'{}'); } catch(e){}
 const skKey = (s,k) => `${woKey()}|${s.id}|${k}`;
 const skItems = s => scopeOf(s).filter(r=>r.sk && r.sk.s!=='' && !['setting','frame'].includes(r.key) && (s.d.agI.length || !['guy','guysize','lead','dir','att'].includes(r.key)));
 function skProgress(){ let n=0, c=0; STN.forEach(s=>skItems(s).forEach(r=>{ n++; if (SKCHK[skKey(s,r.key)] || r.sk.s==='ok') c++; })); return {n,c}; }
 const scopeBadges = s => { const d=s.d, b=[]; if (d.poleInst) b.push(`<span class="pill info">Replace ${d.instHC?`${d.instHC.h}-${d.instHC.c}`:''}</span>`); if (d.has250C) b.push('<span class="pill c">250C</span>'); if (d.agI.length) b.push('<span class="pill none">New guy</span>'); if (d.cus.some(CU.xfmr)) b.push('<span class="pill none">Transformer</span>'); if (d.cus.some(CU.straighten)) b.push('<span class="pill none">Straighten</span>'); if (d.cus.some(c=>c.wf==='I'&&CU.gsi(c))) b.push('<span class="pill none">GSI</span>'); if (d.cus.some(CU.hendrix)) b.push('<span class="pill none">Hendrix</span>'); return b.join(' '); };
 
-function renderKpis(){
+function renderHeaderTools(){ const sel=$('#origSel'); sel.hidden=!DOCS.length; sel.innerHTML='<option value="">Original PDFs…</option>'+DOCS.slice().sort((a,b)=>natural(a.name,b.name)).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join(''); $('#xlsxBtn').hidden=!DOCS.length; }
+$('#origSel').addEventListener('change', e=>{ const v=e.target.value; if (v) openOriginal(v); e.target.value=''; });
+$('#xlsxBtn').addEventListener('click', ()=>exportExcel());
+function renderKpis(){ renderHeaderTools();
   const n=STN.length, c=st=>STN.filter(s=>s._status===st).length;
   const repl=STN.filter(s=>s.d.poleInst).length, c250=POLES.filter(p=>p.R.rules['250C']).length;
   const tot = PKG.jobcost?.data.total ?? PKG.costdist?.data.total ?? null;
@@ -1912,14 +2193,14 @@ function renderKpis(){
   const nr = STN.filter(s=>s._status!=='ok').length;
   $('#reviewBtn').hidden = false; $('#reviewBtn').textContent = nr ? `Review ${nr} pole${nr>1?'s':''}` : 'No poles need review'; $('#reviewBtn').disabled = !nr;
 }
-const TABS=[['overview','Overview'],['poles','Poles'],['sketch','Sketch review'],['estimate','Estimate'],['permits','Permits'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
+const TABS=[['overview','Overview'],['poles','Poles'],['sketch','Sketch review'],['estimate','Estimate'],['permits','Permits'],['devices','DCO & calcs'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
 function render(){
   const sp = skProgress();
   const cnt={poles:STN.length, issues:ISS.filter(i=>i.sev!=='info').length, docs:DOCS.length, sketch: sp.n?`${sp.c}/${sp.n}`:null, guying:POLES.reduce((a,p)=>{ const r=baseRule(p.R); return a+r.anchors.length+(r.spanGuys||[]).length; },0)};
   $('#tabs').innerHTML=TABS.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${TAB===k}">${l}${cnt[k]!=null?`<span class="n">${cnt[k]}</span>`:''}</button>`).join('');
   const v=$('#view');
   const pfNeed = ['compare','spans','guying','equipment'].includes(TAB) && !POLES.length;
-  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, sketch:renderSketch, estimate:renderEstimate, permits:renderPermits, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
+  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, sketch:renderSketch, estimate:renderEstimate, permits:renderPermits, devices:renderDevices, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
   if (TAB==='sketch') wireSketch();
 }
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('[data-tab]'); if(b){ TAB=b.dataset.tab; render(); } });
@@ -1953,7 +2234,7 @@ function renderOverview(){
   <div class="sec"><h3>Package findings</h3>${proj.length?`<div class="issues">${proj.map(issHtml).join('')}</div>`:'<p class="muted">No package-level findings.</p>'}</div>`;
 }
 function docSummary(d, as){
-  const x=d.data||{};
+  const x=d.data||{}; if (d.foreign) return `Different work order (WO ${d._wo.content||d._wo.file})`;
   switch(d.kind){
     case 'pf': return `${x.poles.length} reports: ${x.poles.map(p=>`${p.id} (${p.R.ruleOrder.join('+')})`).join(', ')}`;
     case 'station': return `${x.order.length} stations, ${f2(x.meta.onsite)} on-site hours`;
@@ -1970,6 +2251,10 @@ function docSummary(d, as){
     case 'jha': return [x.date, x.facility].filter(Boolean).join(', ');
     case 'photos': return `${x.pages.length} photos${x.pages.some(p=>p.ocr)?', labels read':''}`;
     case 'vicinity': return x.ocr ? `labels read: ${x.ocr.ids.join(', ')||'none'}` : 'map';
+    case 'dco': return `${x.forms.length} form${x.forms.length===1?'':'s'}: ${x.forms.map(f=>`${f.rows.map(r=>`${r.action} ${r.type} ${r.equip}`).join(', ')} at ${f.dloc||'?'}`).join('; ')}`;
+    case 'vd': return `${x.kind==='flicker'?'Flicker':'Voltage drop'}: ${x.xfmr||'?'} kVA transformer, ${x.rows.length} points, ${x.maxCum}% at the end`;
+    case 'jacket': return `WO ${x.wo}, ${x.subType||''}, designer ${x.designer||'?'}${x.ocr?`, ${x.ocr.manHours||'?'} man hours, upstream ${x.ocr.upstream||'?'}`:', text not read yet'}`;
+    case 'deviceid': return `${x.ids.map(i=>i.id).join(', ')} for WO ${x.wo}`;
   }
   return '';
 }
@@ -2041,6 +2326,8 @@ function skPanel(s){
   return `<h3 style="font-size:22px;margin-bottom:6px">${esc(s.id)} ${statusPill(s._status)}</h3>
   <div class="tscroll" style="margin-bottom:12px"><table><thead><tr><th></th><th>WO / IFC</th><th>Sketch callout</th><th></th></tr></thead><tbody>${idHtml}</tbody></table></div>
   <div class="tscroll"><table class="trace"><thead><tr><th>Should be on the sketch</th><th>Station details</th><th>Sketch text</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">No sketch items for this pole.</td></tr>'}</tbody></table></div>
+  ${s.st?`<div class="sec" style="margin-top:14px"><h3 style="font-size:17px">Station details <span class="muted sm">${f2(s.st.hours)} hrs${s.st.inacc?` · ${esc(s.st.inacc)} inaccessible`:''}</span> <button class="btn sm" data-pages="${(PKG.station||PKG.ifc).id}|${s.st.pages.join(',')}">Open page</button></h3><div class="tscroll"><table class="cutbl"><thead><tr><th>CU</th><th>Work</th><th>Description</th><th class="num">Qty</th></tr></thead><tbody>${s.st.cus.slice().sort((a,b)=>'IRTX'.indexOf(a.wf)-'IRTX'.indexOf(b.wf)).map(c=>{ const oh=/^(TAILBOARD|VEGM|TRUCK|TRAFFIC|ENGR|SETUP|C6$|CS|CST|CSD|CSA)/i.test(c.cu); return `<tr class="${oh?'dim':''}"><td><b style="font-weight:600">${esc(c.cu)}</b></td><td><span class="pill ${c.wf==='I'?'info':c.wf==='R'?'bad':'none'}">${esc(WFN[c.wf]||c.wf)}</span></td><td style="white-space:normal">${esc(c.desc)}</td><td class="num">${f0(c.qty)}</td></tr>`; }).join('')}</tbody></table></div></div>`:''}
+  ${s.wo?`<div class="note" style="margin-top:12px"><b>WO notes</b>${s.wo.notes.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}
   <div class="note" style="margin-top:12px"><b>Callout text</b>${s.sk?s.sk.lines.map(l=>`<p>${esc(l)}</p>`).join(''):`<p class="muted">${SK.ocr?'No callout box starting with this pole label and a DLOC line was found. Review it by eye.':'Use “Read sketch text” to pull the callouts off the drawing and check them automatically.'}</p>`}</div>`;
 }
 function skApply(){ const el=$('#skin'); if (el && SKZ) el.style.transform=`translate(${SKZ.x}px,${SKZ.y}px) scale(${SKZ.s})`; }
@@ -2096,8 +2383,8 @@ function renderPermits(){
 
 /* documents */
 function renderDocs(){
-  const rows = DOCS.slice().sort((a,b)=>natural(KINDS[a.kind].n,KINDS[b.kind].n)).map(d=>`<tr><td><span class="dot ${d.kind==='unknown'?'bad':'ok'}"></span> ${esc(KINDS[d.kind].n)}</td><td>${esc(d.name)}</td><td class="num">${d.pages}</td><td class="muted" style="white-space:normal">${esc(docSummary(d))}</td><td><button class="btn sm" data-pages="${d.id}|all">View</button> <button class="btn sm" data-rmdoc="${d.id}">Remove</button></td></tr>`).join('');
-  return `<div class="viewbar"><h2>Documents</h2><button class="btn sm" data-addmore="1">Add PDFs</button><div class="hint">Each file is identified from its contents. Adding a newer copy of a document replaces the old one. PoleForeman files can hold one pole or the whole package.</div></div><div class="tscroll"><table><thead><tr><th>Type</th><th>File</th><th class="num">Pages</th><th>What was read</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const rows = DOCS.slice().sort((a,b)=>natural(KINDS[a.kind].n,KINDS[b.kind].n)).map(d=>`<tr><td><span class="dot ${d.kind==='unknown'||d.foreign?'bad':'ok'}"></span> ${esc(KINDS[d.kind].n)}${d.foreign?' <span class="pill bad">other WO</span>':''}</td><td>${esc(d.name)}</td><td class="num">${d.pages}</td><td class="muted" style="white-space:normal">${esc(docSummary(d))}</td><td style="white-space:nowrap"><button class="btn sm primary" data-orig="${d.id}">Open PDF</button> <button class="btn sm" data-pages="${d.id}|all">View here</button> <button class="btn sm" data-rmdoc="${d.id}">Remove</button></td></tr>`).join('');
+  return `<div class="viewbar"><h2>Documents</h2><button class="btn sm" data-addmore="1">Add PDFs</button><div class="hint">Open PDF shows the original file in a new browser tab. Each file is identified from its contents. Adding a newer copy of a document replaces the old one. PoleForeman files can hold one pole or the whole package.</div></div><div class="tscroll"><table><thead><tr><th>Type</th><th>File</th><th class="num">Pages</th><th>What was read</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /* settings */
@@ -2108,9 +2395,12 @@ function renderSettings(){
   <h3 style="margin:6px 0 10px">Package</h3>
   <div class="settings">
     ${f('coordFt','Location tolerance (ft)','Coordinates for the same pole in different documents may differ by this much.')}
-    ${f('leadTol','Guy lead tolerance (ft)','Written lead length vs the PoleForeman anchor.',0.5)}
+    ${f('leadTol','Down guy lead tolerance (ft)','Written lead length vs the PoleForeman anchor.',0.1)}
     ${f('degTol','Guy direction tolerance (°)','Written direction vs the PoleForeman bearing.')}
     ${f('attTol','Attachment height tolerance (in)','Written attach heights vs PoleForeman.')}
+    ${f('vdMax','Voltage drop limit (%)','Cumulative drop at the end of the voltage drop worksheet.',0.5)}
+    ${f('flkMax','Flicker limit (%)','Cumulative drop at the end of the flicker worksheet.',0.5)}
+    ${f('dcoMi','DCO distance from project (miles)','DCO coordinates farther than this from every known pole are flagged.',0.1)}
     ${b('repl250c','Replaced poles need a 250C','Flag a pole replacement whose PoleForeman report is 250B only.')}
     ${b('ocrAuto','Read sketch and photo text automatically','Loads the text reader (tesseract.js) from jsDelivr. Nothing is uploaded.')}
     <div><label>Read text now</label><button class="btn" data-ocr="1">Read sketch, photo and map text</button><div class="d">${needsOCR().length?`${needsOCR().length} document${needsOCR().length>1?'s':''} not read yet.`:'Everything has been read.'}</div></div>
@@ -2138,6 +2428,9 @@ $('#view').addEventListener('click', e=>{
   let x;
   if ((x=t('[data-stn]'))){ CUR=x.dataset.stn; render(); return; }
   if ((x=t('[data-pole]'))){ const id=x.dataset.pole; CUR = STN.find(s=>s.id===id) ? id : (PF2ST[id]||id); FIL.review=false; TAB='poles'; render(); window.scrollTo({top:$('.panel').offsetTop-60}); return; }
+  if ((x=t('[data-iss]'))){ gotoIssue(ISS[+x.dataset.iss]); return; }
+  if ((x=t('[data-orig]'))){ openOriginal(x.dataset.orig); return; }
+  if ((x=t('[data-xlsx]'))){ exportExcel(); return; }
   if ((x=t('[data-nav]'))){ if (x.dataset.nav){ CUR=x.dataset.nav; render(); } return; }
   if ((x=t('[data-review]'))){ FIL.review = x.dataset.review==='1'; render(); return; }
   if ((x=t('[data-pages]'))){ const [id,p]=x.dataset.pages.split('|'); openPages(id, p==='all'?null:p.split(',').map(Number)); return; }
@@ -2160,18 +2453,82 @@ $('#view').addEventListener('input', e=>{ const t=e.target; if (t.dataset.fil===
 $('#ocrState').addEventListener('click', ()=>{ TAB='sketch'; render(); });
 
 /* ---------- page viewer ---------- */
-let LB = {doc:null, pdf:null, list:[], i:0};
-async function openPages(docId, pages){
+let LB = {doc:null, pdf:null, list:[], i:0, find:null, findPage:null};
+async function openPages(docId, pages, find, startPage){
   const d=DOCS.find(x=>x.id===docId); if(!d) return;
   try { LB.pdf = await pdfOf(d); } catch(e){ toast('Could not open the PDF'); return; }
-  LB.doc=d; LB.list = pages && pages.length ? pages : Array.from({length:LB.pdf.numPages},(_,i)=>i+1); LB.i=0; LB.all=!pages;
+  LB.doc=d; LB.find=find||null;
+  if (startPage){ LB.list = Array.from({length:LB.pdf.numPages},(_,i)=>i+1);
+    let pg = startPage;
+    if (find){ const q=String(find).toLowerCase(); for (let k=startPage; k<=Math.min(LB.pdf.numPages, startPage+8); k++){ try { const tc=await (await LB.pdf.getPage(k)).getTextContent(); if (tc.items.some(it=>it.str&&it.str.toLowerCase().includes(q))){ pg=k; break; } } catch(e){} } }
+    LB.i=Math.min(Math.max(pg-1,0), LB.list.length-1); LB.all=true; LB.findPage=pg; }
+  else { LB.list = pages && pages.length ? pages : Array.from({length:LB.pdf.numPages},(_,i)=>i+1); LB.i=0; LB.all=!pages; LB.findPage=LB.list[0]; }
   $('#lb').hidden=false; $('#lbTitle').textContent=d.name; showPage();
 }
 async function showPage(){
   const n=LB.list[LB.i]; $('#lbN').textContent = LB.all ? `${n} of ${LB.pdf.numPages}` : `page ${n} (${LB.i+1} of ${LB.list.length})`;
   $('#lbPrev').disabled=LB.i<=0; $('#lbNext').disabled=LB.i>=LB.list.length-1;
-  const cv = await renderPage(LB.pdf, n, 2);
-  $('#lbPg').innerHTML=''; const im=new Image(); im.src=cv.toDataURL('image/png'); im.alt=`Page ${n} of ${LB.doc.name}`; $('#lbPg').appendChild(im);
+  const sc=2, cv = await renderPage(LB.pdf, n, sc);
+  const wrap=document.createElement('div'); wrap.className='pgwrap';
+  const im=new Image(); im.src=cv.toDataURL('image/png'); im.alt=`Page ${n} of ${LB.doc.name}`; wrap.appendChild(im);
+  $('#lbPg').innerHTML=''; $('#lbPg').appendChild(wrap);
+  if (LB.find && n===LB.findPage){
+    try {
+      const pg=await LB.pdf.getPage(n), vp=pg.getViewport({scale:sc}), tc=await pg.getTextContent();
+      const q=String(LB.find).toLowerCase(); let hit=null;
+      for (const it of tc.items){ if (it.str && it.str.toLowerCase().includes(q)){ hit=it; break; } }
+      if (hit){ const t=pdfjsLib.Util.transform(vp.transform, hit.transform); const h=Math.hypot(t[2],t[3])||12*sc, w=(hit.width||q.length*6)*sc;
+        const box=document.createElement('div'); box.className='hl'; Object.assign(box.style,{left:(t[4]-6)/cv.width*100+'%', top:(t[5]-h-4)/cv.height*100+'%', width:(w+12)/cv.width*100+'%', height:(h+10)/cv.height*100+'%'}); wrap.appendChild(box);
+        setTimeout(()=>box.scrollIntoView({block:'center', inline:'center', behavior:'smooth'}), 60); }
+    } catch(e){}
+  }
+}
+$('#lbOrig').onclick=()=>{ if (LB.doc) openOriginal(LB.doc.id, LB.list[LB.i]); };
+function gotoIssue(i){
+  if (!i) return;
+  const l=i.loc;
+  if (l && l.sketch){ SKCUR=l.sketch; TAB='sketch'; SKZ=null; render(); window.scrollTo({top:$('.panel').offsetTop-60}); return; }
+  if (l && l.doc){ openPages(l.doc, null, l.find, l.page||1); return; }
+  if (i.pole && i.pole!=='Project'){ CUR=i.pole; TAB='poles'; render(); }
+}
+
+/* ---------- Excel list for the designer ---------- */
+async function exportExcel(){
+  let X; try { X = await xlsxLib(); } catch(e){ toast(e.message||'Could not load the Excel library'); return; }
+  const wo = woKey();
+  const ord = {bad:0,warn:1,info:2};
+  const list = ISS.slice().sort((a,b)=>ord[a.sev]-ord[b.sev] || natural(a.pole,b.pole));
+  const head = ['#','Pole','Severity','Area','Finding','Detail','Where to look','Page','Designer response','Fixed (Y/N)'];
+  const row = (i,n) => [n+1, i.pole==='Project'?'Package':i.pole, SEVN[i.sev], i.cat, i.title, i.detail, i.loc?(i.loc.sketch?'Job sketch':(DOCS.find(d=>d.id===i.loc.doc)||{}).name||''):(i.src||''), i.loc&&i.loc.page||'', '', ''];
+  const fix = list.filter(i=>i.sev!=='info'), notes = list.filter(i=>i.sev==='info');
+  const wb = X.utils.book_new();
+  const mk = (rows, title) => { const aoa=[[`WO ${wo} QC findings`],[`${title} · generated ${new Date().toLocaleString()} · ${fix.filter(i=>i.sev==='bad').length} errors, ${fix.filter(i=>i.sev==='warn').length} warnings`],[],head,...rows.map(row)]; const ws=X.utils.aoa_to_sheet(aoa); ws['!cols']=[{wch:5},{wch:9},{wch:10},{wch:14},{wch:60},{wch:60},{wch:38},{wch:6},{wch:36},{wch:10}]; ws['!autofilter']={ref:X.utils.encode_range({s:{r:3,c:0},e:{r:3+rows.length,c:head.length-1}})}; ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}},{s:{r:1,c:0},e:{r:1,c:5}}]; return ws; };
+  X.utils.book_append_sheet(wb, mk(fix,'Errors and warnings to fix before full QC'), 'Fix list');
+  if (notes.length) X.utils.book_append_sheet(wb, mk(notes,'Notes to review'), 'Notes');
+  const poles = STN.map(s=>[s.id, s.d.dloc||'', s._counts.bad, s._counts.warn, scopeOf(s).filter(r=>r.cu.s==='ok').map(r=>r.label).join('; ')]);
+  const ws2 = X.utils.aoa_to_sheet([['Pole','DLOC','Errors','Warnings','Scope (station details)'],...poles]); ws2['!cols']=[{wch:8},{wch:14},{wch:8},{wch:9},{wch:90}]; X.utils.book_append_sheet(wb, ws2, 'Poles');
+  const ws3 = X.utils.aoa_to_sheet([['Document type','File','Pages','What was read'],...DOCS.map(d=>[KINDS[d.kind].n, d.name, d.pages, docSummary(d)])]); ws3['!cols']=[{wch:30},{wch:50},{wch:7},{wch:90}]; X.utils.book_append_sheet(wb, ws3, 'Documents');
+  X.writeFile(wb, `WO_${wo}_QC_findings.xlsx`);
+  toast(`Downloaded ${fix.length} findings${notes.length?` and ${notes.length} notes`:''}`);
+}
+
+/* ---------- DCO and calculation worksheets ---------- */
+function renderDevices(){
+  const dcos=(PKG.dco||[]), vds=(PKG.vd||[]), dev=(PKG.deviceid||[]);
+  if (!dcos.length && !vds.length && !dev.length && !(PKG.jacket||[]).length) return `<p class="muted">Add DCO forms, voltage drop / flicker worksheets, device ID screenshots or the job jacket to review them here.</p>`;
+  const devIds = new Set(dev.filter(d=>!d.foreign).flatMap(d=>d.data.ids.map(x=>x.id)));
+  let h = '';
+  if (dcos.length){
+    const rows = dcos.flatMap(d=>d.data.forms.map((F,i)=>({d,F,i})));
+    h += `<div class="viewbar"><h2>DCO forms</h2></div><div class="tscroll"><table><thead><tr><th>Form</th><th>Date</th><th>DLOC</th><th>Pole</th><th class="num">Latitude</th><th class="num">Longitude</th><th>Activity</th><th>Equipment</th><th>Equip #</th><th>Phase</th><th>Feeder</th><th>WO #</th></tr></thead><tbody>${rows.map(({d,F,i})=>{ const s=STN.find(x=>x.d.dloc===F.dloc); const iss=ISS.filter(z=>z.loc&&z.loc.doc===d.id&&z.loc.page===F.page&&z.sev!=='info');
+      return `<tr class="click" data-iss="${iss[0]?ISS.indexOf(iss[0]):''}" ${iss[0]?'':`data-pages="${d.id}|${F.page}"`}><td><span class="dot ${iss.some(z=>z.sev==='bad')?'bad':iss.length?'warn':'ok'}"></span> DCO ${i+1} <span class="muted sm">p. ${F.page}</span></td><td>${esc(F.date||'–')}</td><td>${esc(F.dloc||'–')}</td><td>${s?esc(s.id):'<span class="muted">not matched</span>'}</td><td class="num">${esc(F.latText||'–')}</td><td class="num">${esc(F.lonText||'–')}</td><td>${esc(F.activity.join(', ')||'–')}</td><td>${F.rows.map(r=>esc(`${r.action} ${r.type} ${r.size}`)).join('<br>')}</td><td>${F.rows.map(r=>`<span class="${r.equip&&devIds.size&&!devIds.has(r.equip.toUpperCase())?'pct bad':''}">${esc(r.equip||'–')}</span>`).join('<br>')}</td><td>${F.rows.map(r=>esc(r.phase||'–')).join('<br>')}</td><td>${esc(F.feeder||'–')}</td><td>${esc(F.wo||'blank')}</td></tr>`; }).join('')}</tbody></table></div>`;
+  }
+  if (dev.length) h += `<div class="sec"><h3>Generated device IDs</h3><div class="tscroll"><table><thead><tr><th>Device ID</th><th>Type</th><th>Work order</th><th>Generated</th><th>By</th><th>On a DCO?</th></tr></thead><tbody>${dev.flatMap(d=>d.data.ids.map(x=>({d,x}))).map(({d,x})=>{ const used=dcos.some(dd=>dd.data.forms.some(f=>f.rows.some(r=>(r.equip||'').toUpperCase()===x.id))); return `<tr><td><button class="link" data-pages="${d.id}|${x.page}">${esc(x.id)}</button></td><td>${esc(x.type||'')}</td><td>${esc(x.wo||'')}${d.foreign?' <span class="pill bad">other WO</span>':''}</td><td>${esc(x.when||'')}</td><td>${esc(x.user||'')}</td><td>${used?'<span class="pill ok">Yes</span>':'<span class="pill warn">No</span>'}</td></tr>`; }).join('')}</tbody></table></div></div>`;
+  vds.forEach(d=>{ const V=d.data, lim=V.kind==='flicker'?S.flkMax:S.vdMax;
+    h += `<div class="sec"><h3>${V.kind==='flicker'?'Flicker':'Voltage drop'} worksheet <span class="muted sm">${esc(d.name)} · ${V.xfmr||'?'} kVA transformer${V.starting?` · motor starting ${V.starting} kVA`:''}${d.foreign?' · other WO':''}</span> <button class="btn sm" data-orig="${d.id}">Open PDF</button></h3><div class="tscroll"><table><thead><tr><th class="num">Point</th><th>Voltage</th><th>Wire / kVA</th><th>Type</th><th class="num">Feet</th><th class="num">Load kVA</th><th class="num">Cumulative drop</th><th class="num">Section drop</th><th class="num">kVA thru</th><th class="num">Capacity</th><th class="num">Amps</th></tr></thead><tbody>${V.rows.map(r=>`<tr><td class="num">${r.point}</td><td>${esc(r.v)}</td><td>${esc(r.wire)}</td><td>${esc(r.inst)}</td><td class="num">${f1(r.feet)}</td><td class="num">${r.load==null?'–':f1(r.load)}</td><td class="num"><span class="${r.cum>lim?'pct warn':''}">${f1(r.cum)}%</span></td><td class="num">${f2(r.sect)}%</td><td class="num"><span class="${r.cap&&r.kva>r.cap?'pct warn':''}">${f0(r.kva)}</span></td><td class="num">${r.cap?f0(r.cap):'–'}</td><td class="num">${f0(r.amps)}</td></tr>`).join('')}</tbody></table></div></div>`; });
+  (PKG.jacket||[]).forEach(d=>{ const J=d.data, O=J.ocr||{};
+    h += `<div class="sec"><h3>Job jacket <span class="muted sm">${esc(d.name)}${d.foreign?' · other WO':''}</span> <button class="btn sm" data-orig="${d.id}">Open PDF</button></h3><div class="grid2"><div class="tscroll"><table><tbody>${[['Work order',J.wo],['Type',[J.workType,J.subType].filter(Boolean).join(' / ')],['Designer',[J.designer,O.designerName].filter(Boolean).join(' · ')],['Target finish',J.targetFinish],['Address',[J.address,J.city,J.state].filter(Boolean).join(', ')],['Local office',[J.office,J.officeName].filter(Boolean).join(' ')],['Man hours',O.manHours],['Upstream device',O.upstream],['Voltage',O.voltage],['Location (jacket text)',O.location],['In conjunction with',(O.conjunction||[]).join(', ')]].map(([l,v])=>`<tr><th>${l}</th><td>${v!=null&&v!==''?esc(v):'<span class="muted">'+(J.ocr?'–':'not read yet')+'</span>'}</td></tr>`).join('')}</tbody></table></div>${J.img?`<figure class="light" style="margin:0;border:1px solid var(--rule);border-radius:8px;overflow:hidden"><img src="${J.img}" alt="Job jacket page" style="width:100%;display:block"></figure>`:''}</div></div>`; });
+  return h;
 }
 $('#lbPrev').onclick=()=>{ if(LB.i>0){LB.i--; showPage();} }; $('#lbNext').onclick=()=>{ if(LB.i<LB.list.length-1){LB.i++; showPage();} };
 $('#lbClose').onclick=()=>{ $('#lb').hidden=true; };
