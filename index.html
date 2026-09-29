@@ -486,8 +486,11 @@ function docClassify(pages, name) {
   if (has(/Vicinity Map/) || /vicinity/i.test(n)) return 'vicinity';
   if (/inspection/i.test(n) || has(/Inspection (Sheet|Form|Report)/i)) return 'inspection';
   const pgT = p => [...p.lines.map(l=>l.text), ...(p.annots||[]).map(a=>a.text)].join(' ');
-  if (pages.length && pages.every(p => p.lines.length <= 14) && pages.filter(p => /DLOC/i.test(pgT(p)) && /\bLAT(itude)?\b/i.test(pgT(p))).length >= Math.max(1, pages.length * 0.6)) return 'photos';
-  if (/photo/i.test(n) || (!T.trim() && pages.length)) return 'photos';
+  if (pages.length && pages.every(p => p.lines.length <= 10) && !has(/Ticket|Excavat|Work Order|Station Details|Estimate/i) && pages.filter(p => /DLOC/i.test(pgT(p)) && /\bLAT(itude)?\b/i.test(pgT(p))).length >= Math.max(1, pages.length * 0.6)) return 'photos';
+  if (!T.trim() && !pages.some(p => (p.annots || []).length)) { // scanned / image-only: go by the file name
+    const byName = [[/811|locate|ticket/i,'t811'],[/njuns/i,'njuns'],[/sketch/i,'sketch'],[/vicinity/i,'vicinity'],[/jacket/i,'jacket'],[/\bdco\b|change.?order/i,'dco'],[/jha|hazard/i,'jha'],[/envir|enviro/i,'env'],[/inspect/i,'inspection'],[/station/i,'station'],[/photo/i,'photos']];
+    const hit = byName.find(([re]) => re.test(n)); return hit ? hit[1] : 'photos'; }
+  if (/photo/i.test(n)) return 'photos';
   if (/sketch/i.test(n)) return 'sketch';
   return 'unknown';
 }
@@ -542,6 +545,7 @@ function parseWO(pages) {
   if ((m = T.match(/Start:\s*DLOC\s*(\d+)/))) W.meta.startDloc = m[1];
   if ((m = T.match(/End:\s*DLOC\s*(\d+)/))) W.meta.endDloc = m[1];
   if ((m = T.match(/(The scope of this work order[\s\S]*?)\n\s*Asset:/i))) W.meta.scope = m[1].replace(/\s+/g,' ').trim();
+  if (W.meta.scope && (m = W.meta.scope.match(/contains\s+(\d+)\s+work\s+points/i))) W.meta.scopePoints = +m[1];
   const approvals = [...T.matchAll(/Approval Amount-\s*\$\s*([\d,]+\.\d{2})/g)].map(x => pfNum(x[1]));
   W.meta.approvals = approvals;
   const addr = T.match(/Street Address -\s*(.+)/); if (addr) W.meta.address = addr[1].trim();
@@ -572,8 +576,8 @@ function parseWO(pages) {
     if (sec === 'log') {
       if (/^\d+\/\d+\/\d+$/.test(c[0]) && c.length >= 3) {
         const e = { date: c[0], cls: c[1], by: c[2], desc: c.slice(3).join(' '), text: [], page: L.pageNo }; W.log.push(e);
-        wd = /Work Description/.test(t); pn = /Purpose & Necessity/.test(t) ? '' : null;
-        if (pn != null) { pn = t.replace(/^.*Purpose & Necessity\s*/, ''); W.meta.pn = pn; }
+        wd = /Work Description/.test(t); pn = /Purpose (&|and) Necessity/i.test(t) ? '' : null;
+        if (pn != null) { pn = t.replace(/^.*Purpose (&|and) Necessity\s*/i, ''); W.meta.pn = pn; }
         if (wd) { const lastCell = c[c.length - 1]; if (/^[A-Z]{0,3}\d{1,4}$/.test(lastCell)) startNote(lastCell, L.pageNo); }
         return;
       }
@@ -581,18 +585,21 @@ function parseWO(pages) {
       if (pn != null) { W.meta.pn = (W.meta.pn + ' ' + t).trim(); return; }
       if (wd) {
         if (/^[A-Z]{0,3}\d{1,4}$/.test(t)) { startNote(t, L.pageNo); return; }
+        let sm; if ((sm = t.match(/^(?:Station|Point|Work\s*Point|Pole)\s*#?\s*0*(\d{1,4})\s*:?$/i))) { startNote('P' + sm[1], L.pageNo); W.notes['P' + sm[1]].heading = t; return; }
+        if ((sm = t.match(/(?:job|WO|work order)\s+contains\s+(\d+)\s+work\s+points/i))) W.meta.wdPoints = +sm[1];
         const cur = W.notes[W.noteOrder[W.noteOrder.length - 1]]; if (!cur) return;
         if ((m = t.match(/^DLOC:\s*(\d+)/i))) { cur.dloc = m[1]; return; }
         if ((m = t.match(/^LAT:\s*(-?[\d.]+)/i))) { cur.lat = parseFloat(m[1]); cur.latText = m[1]; return; }
         if ((m = t.match(/^LONG:\s*(-?[\d.]+)/i))) { cur.lon = parseFloat(m[1]); cur.lonText = m[1]; return; }
-        if (/^Notes:/i.test(t)) { cur.inNotes = true; const rest = t.replace(/^Notes:\s*/i, ''); if (rest) cur.raw.push(rest); return; }
+        if (/^(Notes|Scope|Description|Work):/i.test(t)) { cur.inNotes = true; const rest = t.replace(/^(Notes|Scope|Description|Work):\s*/i, ''); if (rest) cur.raw.push(rest); return; }
+        if (/^(Latitude|Longitude|Lat|Long):?\s*$/i.test(t)) return;
         if (cur.inNotes) cur.raw.push(t);
       }
     }
   });
   function startNote(id, pg) { W.notes[id] = { id, dloc: null, lat: null, lon: null, raw: [], notes: [], page: pg }; W.noteOrder.push(id); }
   Object.values(W.notes).forEach(n => { n.notes = sentences(n.raw.join(' ')); delete n.inNotes; });
-  W.log.forEach(e => { e.text = e.text.join('\n'); e.kind = /Auto Generated Notification|Please be informed/i.test(e.text + ' ' + e.desc) ? 'notification' : /Work Description/i.test(e.desc) ? 'workdesc' : /Purpose & Necessity/i.test(e.desc) ? 'pn' : 'note'; });
+  W.log.forEach(e => { e.text = e.text.join('\n'); e.kind = /Auto Generated Notification|Please be informed/i.test(e.text + ' ' + e.desc) ? 'notification' : /Work Description/i.test(e.desc) ? 'workdesc' : /Purpose (&|and) Necessity/i.test(e.desc) ? 'pn' : 'note'; });
   if (W.meta.pn) { const mm = W.meta.pn.match(/total cost[^$]*\$\s*([\d.,]+)/i); if (mm) { W.meta.pnCostText = mm[1].replace(/\.$/, ''); } }
   return W;
 }
@@ -680,7 +687,7 @@ function parseSketch(pages, pageNo) {
     if (/DLOC/i.test(T) || (/^Lat/im.test(T) && /^Lon/im.test(T))) { const c = ocrCallouts(al)[0]; if (c) { c.box = { x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1 }; c.fromAnnot = true; annCallouts.push(c); } }
     else al.forEach(l => tl.push(l)); });
   const textCallouts = ocrCallouts(tl).filter(c => !annCallouts.some(a => a.dloc && a.dloc === c.dloc));
-  K.callouts = [...annCallouts, ...textCallouts];
+  K.callouts = [...annCallouts, ...textCallouts].filter((c, i, a) => a.findIndex(x => x.id === c.id && x.dloc === c.dloc && x.lines.join('|') === c.lines.join('|')) === i);
   annCallouts.forEach(c => c.lines.forEach((t, i) => tl.push({ text: t, x0: c.box.x0, x1: c.box.x1, y0: c.box.y0 + i * 10, y1: c.box.y0 + i * 10 + 9, h: 9 })));
   K.textLines = tl.map(l => ({ t: l.text, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 }));
   return K;
@@ -1252,7 +1259,7 @@ const angd = (a,b) => { const d=Math.abs(((a-b)%360+360)%360); return d>180?360-
 const CU = {
   pole: c => /^WP\d/i.test(c.cu) || /^POLE,/i.test(c.desc),
   poleHC: c => { if(!c) return null; let m=c.cu.match(/WP(\d+)-(\d+)/i)||c.desc.match(/(\d+)\s*FT\s*CL(?:ASS)?\s*(\d+)/i); return m?{h:+m[1], c:String(+m[2])}:null; },
-  ag: c => /^AG\d/i.test(c.cu) || /^AG,/i.test(c.desc),
+  ag: c => /^(AG|GUYDN|GUYSP|DG)\d/i.test(c.cu) || /^AG,|DOWN GUY|SPAN GUY|GUY ASSY/i.test(cuDesc(c)),
   agSize: c => (c.desc.match(/(\d+\/\d+)"/)||[])[1]||null,
   agHelix: c => ({S:'single',D:'double',T:'triple'})[(c.desc.match(/\b([SDT])\s*HELIX/i)||[])[1]]||null,
   gsi: c => /^GSI/i.test(c.cu) || /GUY STRAIN/i.test(c.desc),
@@ -1268,7 +1275,7 @@ const CU = {
 };
 const WFN = {I:'install', R:'remove', T:'transfer'};
 const RE = {
-  repl: /\b(replace|change\s*out)\s+(?:the\s+)?(?:existing\s+)?pole\b|\bset\s+(?:a\s+)?new\s+pole\b|\bwith\s+WP\d/i,
+  repl: /\b(replace|change\s*out)\s+(?:the\s+)?(?:existing\s+)?(?:broken\s+|damaged\s+|rotten\s+)?pole\b(?!\s*(?:ground|guy|tag|top|attach|fram|number|#|riser|step|band|key|line|light))|\bset\s+(?:a\s+)?new\s+pole\b|\bwith\s+WP\d|\bpole\s+to\s+WP\d/i,
   guyNew: /\b(install|replace|add)\b[^.]*?(down\s*guy|\bDG\b|guy\s*wire)/i,
   guyAny: /down\s*guy|\bDG\b|guy\s*wire/i,
   gsi: /\bGSI\b|guy\s*strain/i, hendrix: /hendrix/i, xfmr: /transformer|xfmr|\bkva\b/i, light: /\blight\b|luminaire/i,
@@ -1339,7 +1346,7 @@ function buildStations(){
   // PoleForeman: matched by label only (PoleForeman coordinates aren't reliable)
   POLES.forEach(P=>{ const s=map.get(nkey(P.id)); if (s && !s.pf) s.pf=P; else { const n=get(P.id); if (!n.pf) n.pf=P; } });
   (SK?.K.labels||[]).forEach(l=>{ const s=map.get(nkey(l.id)) || get(l.id); s.skLabel=l; });
-  map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
+  map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key && !WO.notes[k].heading) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
   (skCO()?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
   const all = order.map(k=>map.get(k));
   // photos
@@ -1378,7 +1385,8 @@ function scopeOf(s){
     sk: s.sk ? s.sk.notes.join(' ') : null,
   };
   const noSrc = { wo: WO ? 'no note for this pole' : 'no WO document', ifc: PKG.ifc ? 'no row for this pole' : 'no IFC package', sk: !SK ? 'no sketch' : !skCO() ? 'sketch text not read' : 'callout not found' };
-  const has = (k,re) => src[k]!=null && re.test(src[k]);
+  const NEG = /\bno need\b|\bnot (?:needed|required)\b|\bleave\b[^.]*\bas[- ]is\b|\bdo not\b|\bdon'?t\b/i;
+  const has = (k,re,noun) => { if (src[k]==null) return false; const all = sentencesOf(src[k]); if (!all.some(x=>re.test(x))) return false; const nr = noun || re; return !all.some(x=>nr.test(x) && NEG.test(x)); };
   const T = (k, found, okText) => src[k]==null ? C.none(noSrc[k]) : found ? C.ok(okText||'called out') : C.miss();
   const skGlobal = skCO() ? (skCO().lines||[]).map(l=>l.t).join('\n') : '';
   const row = (o) => { rows.push(o); return o; };
@@ -1398,7 +1406,7 @@ function scopeOf(s){
       cu: d.instHC ? C.ok(`${pI.cu}: ${d.instHC.h}' class ${d.instHC.c}`) : C.miss('no new pole CU'),
       wo: cmpP('wo', poleFromText(src.wo), src.wo), ifc: s.ifc ? cmpP('ifc', ifcP, '') : C.none(noSrc.ifc), sk: cmpP('sk', poleFromText(src.sk), src.sk),
       pf: !s.pf ? C.none('no report') : (d.pfSpec.len && exp && (d.pfSpec.len!==exp.h || d.pfSpec.c!==exp.c)) ? C.bad(`models ${s.pf.R.poleSpec}`) : C.ok(s.pf.R.poleSpec||''),
-      req: { cu:true, wo:!!pI, ifc:!!(pI&&s.ifc), sk:!!pI } });
+      req: { cu:true, wo:false, ifc:false, sk:!!pI } });
   }
 
   /* guying */
@@ -1427,7 +1435,7 @@ function scopeOf(s){
         row({ key:'guysize', label:`Guy size ${pfSize||cuSize||''}"`, cat:'Guying', expect: pfSize?pfSize+'"':'',
           cu: cuSize ? (pfSize && cuSize!==pfSize ? C.bad(`${cuSize}" guy`) : C.ok(`${cuSize}" guy${cuHelix?`, ${cuHelix} helix`:''}`)) : C.miss('size not in CU'),
           wo: cS('wo'), ifc: s.ifc?cS('ifc'):C.none(noSrc.ifc), sk: cS('sk'),
-          pf: C.ok(`${A.wires.map(w=>w.size).join(', ')}${A.anchor?`, ${A.anchor.type}`:''}`) , req:{ wo:true },
+          pf: C.ok(`${A.wires.map(w=>w.size).join(', ')}${A.anchor?`, ${A.anchor.type}`:''}`) , req:{ wo:!!gt.wo },
           extra: cuHelix && pfHelix && cuHelix!==pfHelix ? `CU anchor is ${cuHelix} helix, PoleForeman models ${A.anchor.type}` : '' });
       }
       const numRow = (key, label, pv, fmt, tol, pickN) => {
@@ -1435,7 +1443,7 @@ function scopeOf(s){
             if (k==='sk' && key==='lead' && skGlobal && new RegExp(`\\b${Math.round(pv)}\\s*(?:ft|')\\s*LL\\b`,'i').test(skGlobal)) return C.ok(`${Math.round(pv)} ft LL label`);
             return C.miss('not stated'); }
           return (key==='dir' ? angd(v,pv)>tol : Math.abs(v-pv)>tol) ? C.bad(fmt(v)) : C.ok(fmt(v)); };
-        row({ key, label:`${label} ${fmt(pv)}`, cat:'Guying', expect: fmt(pv), cu:C.na(), wo:cell('wo'), ifc: s.ifc?cell('ifc'):C.none(noSrc.ifc), sk:cell('sk'), pf:C.ok(fmt(pv)), req:{ wo:d.agI.length>0, sk:d.agI.length>0 } });
+        row({ key, label:`${label} ${fmt(pv)}`, cat:'Guying', expect: fmt(pv), cu:C.na(), wo:cell('wo'), ifc: s.ifc?cell('ifc'):C.none(noSrc.ifc), sk:cell('sk'), pf:C.ok(fmt(pv)), req:{ wo:d.agI.length>0 && !!gt.wo, sk:d.agI.length>0 && !!gt.sk } });
       };
       numRow('lead','Lead length', A.lead, v=>`${f1(v)}'`, S.leadTol, 'lead');
       const r = numRow('dir','Direction', A.bearing, v=>`${f0(v)}°`, S.degTol, 'deg');
@@ -1443,7 +1451,7 @@ function scopeOf(s){
       const topAtt = A.wires.length ? A.wires.map(w=>w.attach) : [];
       if (topAtt.length){ const pv = topAtt[0];
         const cell = k => { if (src[k]==null) return C.none(noSrc[k]); const v=gn[k].att; if (v==null) return C.miss('not stated'); return topAtt.some(a=>Math.abs(a-v)<=S.attTol) ? C.ok(`${v}"`) : C.bad(`${v}"`); };
-        row({ key:'att', label:`Guy attach ${topAtt.join(' / ')}" from top`, cat:'Guying', expect:`${pv}"`, cu:C.na(), wo:cell('wo'), ifc:s.ifc?cell('ifc'):C.none(noSrc.ifc), sk:cell('sk'), pf:C.ok(topAtt.map(a=>a+'"').join(', ')), req:{ wo:d.agI.length>0, sk:d.agI.length>0 } });
+        row({ key:'att', label:`Guy attach ${topAtt.join(' / ')}" from top`, cat:'Guying', expect:`${pv}"`, cu:C.na(), wo:cell('wo'), ifc:s.ifc?cell('ifc'):C.none(noSrc.ifc), sk:cell('sk'), pf:C.ok(topAtt.map(a=>a+'"').join(', ')), req:{ wo:d.agI.length>0 && !!gt.wo, sk:d.agI.length>0 && !!gt.sk } });
       }
     }
   }
@@ -1469,12 +1477,14 @@ function scopeOf(s){
   }
 
   /* equipment: transformer, light, riser/cutout */
+  const vo = noun => { const r = new RegExp(`\\b(?:install|replace|transfer|remove|upgrade|add|relocate|set|mount|move|change|swap)\\w*\\s+(?:(?:a|an|the|new|existing|unused|old|primary|private|street|security|pole|\\d+\\s*kva|\\d+)\\s+){0,3}(?:${noun})\\b`, 'i'); r._noun = new RegExp(`\\b(?:${noun})\\b`, 'i'); return r; };
   const eqRow = (key, label, isCU, re, pfCat, sizeOf, pfTrig=true) => {
     const cu = d.cus.filter(isCU), pfE = d.equip.filter(e=>pfCat.test(e.cat));
-    const txt = ['wo','ifc','sk'].some(k=>has(k,re));
+    const nounRe = re._noun || re;
+    const txt = ['wo','ifc','sk'].some(k=>has(k,re,nounRe));
     if (!cu.length && !txt && !(pfTrig && d.repl && pfE.length)) return;
     const wfs = new Set(cu.map(c=>c.wf)); const wf = !cu.length ? '' : wfs.has('I')&&wfs.has('R') ? 'replace' : (WFN[cu[0].wf]||cu[0].wf);
-    const cSize = cu[0] && sizeOf ? CU.kva(cu[0]) : null;
+    const cI = cu.find(c=>c.wf==='I') || cu[0]; const cSize = cI && sizeOf ? CU.kva(cI) : null;
     const pSize = pfE[0] && sizeOf ? pfNum(pfE[0].name) : null;
     const tcell = k => { if (src[k]==null) return C.none(noSrc[k]); const sent = pickClause(src[k], re); if (!sent) return C.miss(); const kv = sizeOf ? pfNum((sent.match(/(\d+(?:\.\d+)?)\s*kva/i)||[])[1]) : null; const at = attachIn(sent);
       const bits = [kv!=null?`${kv} kVA`:'', at!=null?`at ${at}"`:''].filter(Boolean).join(' ');
@@ -1482,18 +1492,18 @@ function scopeOf(s){
       if (at!=null && pfE[0] && Math.abs(at-pfE[0].attach)>S.attTol) return C.bad(bits);
       return C.ok(bits||'called out'); };
     row({ key, label: `${label}${wf?` (${wf})`:''}${cSize?` ${cSize} kVA`:''}`, cat:'Equipment',
-      cu: cu.length ? (sizeOf && cSize!=null && pSize!=null && cSize!==pSize ? C.bad(`${cu[0].cu}, ${cSize} kVA`) : C.ok(cu.map(c=>`${WFN[c.wf]||c.wf} ${c.cu}`).join(', '))) : C.miss(`no ${label.toLowerCase()} CU`),
+      cu: cu.length ? (sizeOf && cSize!=null && pSize!=null && cSize!==pSize ? C.bad(`${cI.cu} is ${cSize} kVA; PoleForeman models ${pSize} kVA`) : C.ok(cu.map(c=>`${WFN[c.wf]||c.wf} ${c.cu}`).join(', '))) : C.miss(`no ${label.toLowerCase()} CU`),
       wo: tcell('wo'), ifc: s.ifc?tcell('ifc'):C.none(noSrc.ifc), sk: tcell('sk'),
       pf: !s.pf ? C.none('no report') : pfE.length ? C.ok(pfE.map(e=>`${e.name} at ${e.attach}"`).join(', ')) : cu.length ? C.warn('not modeled') : C.none('none'),
-      req: { cu:true, wo:cu.length>0, ifc:cu.length>0&&!!s.ifc, sk:cu.length>0 && key!=='riser' || (key==='riser'&&cu.length>0) } });
+      req: { cu:true, wo:cu.length>0 && cu.some(c=>c.wf!=='T'), ifc:false, sk:cu.length>0 && (key==='xfmr' || cu.some(c=>c.wf!=='T')) } });
   };
-  eqRow('xfmr','Transformer', CU.xfmr, RE.xfmr, /Transformer/i, true);
-  eqRow('light','Light', CU.light, RE.light, /Light/i, false);
-  eqRow('riser','Primary riser / cutout', CU.riser, RE.riser, /Switch/i, false);
-  eqRow('fuse','Fuse / switch', c=>['fuse','switch'].includes(eqClass(c)) && !CU.riser(c), /\bfuse|cutout|\bswitch|\bLFUS\b/i, /Switch/i, false, false);
-  eqRow('recloser','Recloser', c=>eqClass(c)==='recloser', /recloser/i, /Reclos/i, false, false);
-  eqRow('capacitor','Capacitor', c=>eqClass(c)==='capacitor', /capacitor/i, /Capac/i, false, false);
-  eqRow('regulator','Regulator', c=>eqClass(c)==='regulator', /regulator/i, /Regul/i, false, false);
+  eqRow('xfmr','Transformer', CU.xfmr, vo('transformers?|xfmrs?'), /Transformer/i, true);
+  eqRow('light','Light', CU.light, vo('lights?|luminaires?|street\\s*lights?|security\\s*lights?'), /Light/i, false);
+  eqRow('riser','Primary riser', CU.riser, vo('(?:primary\\s+)?risers?'), /Switch/i, false, false);
+  eqRow('fuse','Fuse / switch', c=>['fuse','switch'].includes(eqClass(c)) && !CU.riser(c), vo('fuses?|cutouts?|fuse\\s*cutouts?|switch(?:es)?|LFUS|fuse\\s*switch'), /Switch/i, false, false);
+  eqRow('recloser','Recloser', c=>eqClass(c)==='recloser', vo('reclosers?'), /Reclos/i, false, false);
+  eqRow('capacitor','Capacitor', c=>eqClass(c)==='capacitor', vo('capacitors?(?:\\s*banks?)?|cap\\s*banks?'), /Capac/i, false, false);
+  eqRow('regulator','Regulator', c=>eqClass(c)==='regulator', vo('regulators?'), /Regul/i, false, false);
 
   /* straighten */
   const cuS = d.cus.filter(CU.straighten);
@@ -1533,7 +1543,7 @@ const FEAT = [
   { key:'recloser', label:'Recloser', re:/recloser/i, big:true },
   { key:'capacitor', label:'Capacitor', re:/capacitor/i, big:true },
   { key:'regulator', label:'Regulator', re:/regulator/i, big:true },
-  { key:'arrester', label:'Arrester', re:/arrester/i },
+  { key:'arrester', label:'Arrester', re:/arrest[eo]r/i },
   { key:'riser', label:'Riser', re:/riser/i },
   { key:'frame', label:'Reframe', re:/fram(e|ing)|crossarm/i },
 ];
@@ -1569,11 +1579,17 @@ function runChecks(dupPF){
   (dupPF||[]).forEach(id=>add(PF2ST[id]||id,'warn','Report',`More than one PoleForeman report for ${id}`,'The last one read is used.','', 'PoleForeman'));
   crossChecks(add);
   ISS.forEach(i=>{ if (!i.loc) i.loc = locFor(i); });
+  /* guy details: one finding per pole and document instead of lead / direction / attach separately */
+  { const gk = new Map(); ISS = ISS.filter(i=>{ const m = i.cat==='Guying' && i.title.match(/^(Lead length|Direction|Guy attach) (.+?) isn't called out on the (.+)$/); if (!m) return true; const k=i.pole+'|'+m[3]; const g=gk.get(k); if (g){ g.parts.push(m[1].toLowerCase()); return false; } i.parts=[m[1].toLowerCase()]; i.docN=m[3]; gk.set(k,i); return true; });
+    gk.forEach(i=>{ if (i.parts.length>1) i.title = `Down guy details (${i.parts.join(', ')}) aren't called out on the ${i.docN}`; }); }
   /* less noise: one entry per finding (250B and 250C merged), and CU-list notes grouped across poles */
   const merged = new Map(); ISS.forEach(i=>{ const k=`${i.pole}|${i.sev}|${i.cat}|${i.title}`; const m=merged.get(k); if (m){ if (i.rule && !m.rule.split(', ').includes(i.rule)) m.rule = m.rule ? m.rule+', '+i.rule : i.rule; } else merged.set(k, i); });
   let list = [...merged.values()];
   const grp = new Map(); list = list.filter(i=>{ const m = i.cat==='CU' && i.title.match(/^(\S+?):? (isn't in the compatible unit list|description differs from the CU list|is an underground CU.*)$/); if (!m) return true; const k=i.sev+'|'+i.title; const g=grp.get(k); if (g){ g.poles.push(i.pole); return false; } i.poles=[i.pole]; grp.set(k,i); return true; });
   grp.forEach(i=>{ if (i.poles.length>1){ i.detail = `${i.poles.join(', ')}. ${i.detail||''}`.trim(); i.pole='Project'; } });
+  /* naming: one finding per document instead of one per pole */
+  const nameG = new Map(); list = list.filter(i=>{ const m = i.cat==='Naming' && i.title.match(/^The (.+?) calls this pole "(.+?)" instead of "(.+?)"$/); if (!m) return true; const g = nameG.get(m[1]); if (g){ g.pairs.push([m[2],m[3]]); return false; } i.pairs=[[m[2],m[3]]]; i.docName=m[1]; nameG.set(m[1], i); return true; });
+  nameG.forEach(i=>{ if (i.pairs.length>1){ const ex = i.pairs.slice(0,4).map(p=>`${p[0]} → ${p[1]}`).join(', '); i.title = `The ${i.docName} names ${i.pairs.length} poles differently from the station details`; i.detail = `${ex}${i.pairs.length>4?', …':''}. Matched as the same poles.`; i.pole='Project'; } });
   ISS = list;
   const stat = id => { const is=ISS.filter(x=>x.pole===id); return { s: is.some(x=>x.sev==='bad')?'bad':is.some(x=>x.sev==='warn')?'warn':'ok', c:{bad:is.filter(x=>x.sev==='bad').length,warn:is.filter(x=>x.sev==='warn').length,info:is.filter(x=>x.sev==='info').length} }; };
   STN.forEach(s=>{ const r=stat(s.id); s._status=r.s; s._counts=r.c; });
@@ -1639,8 +1655,8 @@ function crossChecks(add){
         if (row.key==='repl' && col==='pf') return;
         const src = COLN[col];
         const ocrSk = col==='sk' && !skCO()?.text; if (cell.s==='bad') add(id, ocrSk?'warn':'bad', row.cat, `${row.label}: ${src} shows ${cell.t}${row.expect?`, expected ${row.expect}`:''}`, ocrSk?'Read from the sketch image. Confirm on the Sketch review tab.':'', '', src);
-        else if (cell.s==='warn') add(id, 'warn', row.cat, `${row.label}: ${src} ${cell.t}`, '', '', src);
-        else if (cell.s==='miss' && (row.req||{})[col]) add(id, col==='cu'?'bad':'warn', row.cat, col==='cu' ? `${row.label} is called out but has no CU in the station details` : `${row.label} isn't called out on the ${src}`, cell.t!=='not called out'?cell.t:(ocrSk?'Read from the sketch image. Confirm on the Sketch review tab.':''), '', src);
+        else if (cell.s==='warn') add(id, col==='pf' && /not modeled/.test(cell.t) ? 'info' : 'warn', row.cat, `${row.label}: ${src} ${cell.t}`, '', '', src);
+        else if (cell.s==='miss' && (row.req||{})[col]) add(id, col==='cu'?'bad':'warn', row.cat, col==='cu' ? `${row.label}: no CU in the station details, but ${COLS.filter(([k])=>k!=='cu' && row[k] && row[k].s==='ok').map(([k,n])=>n).join(' and ')||'another document'} shows it` : `${row.label} isn't called out on the ${src}`, cell.t!=='not called out'?cell.t:(ocrSk?'Read from the sketch image. Confirm on the Sketch review tab.':''), '', src);
       });
       if (row.extra) add(id,'warn',row.cat,row.extra,'','', 'station details');
     });
@@ -1666,13 +1682,13 @@ function crossChecks(add){
     if (dl.length>1) dl.slice(1).forEach(([n,v,sev])=>{ if (v!==dl[0][1]) add(id, sev, 'Location', `DLOC on the ${n} (${v}) doesn't match the ${dl[0][0]} (${dl[0][1]})`, '', '', n); });
     const nm = [...(s.names||[])]; if (s.sk?.id) nm.push(['sketch callout', s.sk.id]); if (s.ph?.ocr?.id && s.ph.ocr.src!=='text') nm.push(['photo label', s.ph.ocr.id]);
     nm.forEach(([src,raw])=>{ if (raw && raw!==s.id) add(id,'warn','Naming',`The ${src} calls this pole "${raw}" instead of "${s.id}"`,'Matched as the same pole. Use one naming convention across the package.','',src); });
-    if (SK && !s.skLabel && (s.st||s.wo)) add(id,'warn','Sketch',`${id} label not found on the job sketch`,'','','job sketch');
+    if (SK && SK.K.labels.length && !s.skLabel && (s.st||s.wo)) add(id,'warn','Sketch',`${id} label not found on the job sketch`,'','','job sketch');
     if (skCO() && !s.sk && (s.st||s.wo)) add(id,'info','Sketch',`No callout box found for ${id} on the sketch`,'Text reading looks for a box starting with the pole label and DLOC. Check the Sketch review tab.','','job sketch');
     if (PKG.photos && !s.ph && (s.st||s.wo)) add(id,'info','Photos',`No photo matched to ${id}`,'','','photos');
   });
 
   /* CU list suggestions (duplicates, GSI in a down guy macro, transformer voltage) */
-  STN.forEach(s=>{ const fx = cuFixes(s); Object.entries(fx).forEach(([i,f])=>{ if (/^PoleForeman models|^Guy size/.test(f.fix)) return; const c=s.st.cus[+i]; add(s.id, f.cls==='Incorrect CU'?'bad':'warn', 'CU', `${c.cu} (${WFN[c.wf]||c.wf}): ${f.cls}`, f.fix, '', 'station details', (PKG.station||PKG.ifc) ? {doc:(PKG.station||PKG.ifc).id, page:c.page||s.st.pages[0], find:c.cu} : null); }); });
+  STN.forEach(s=>{ const fx = cuFixes(s); Object.entries(fx).forEach(([i,f])=>{ if (/^PoleForeman models|^Guy size/.test(f.fix)) return; const c=s.st.cus[+i]; add(s.id, f.cls==='Incorrect CU' && !/ kV system/.test(f.fix)?'bad':'warn', 'CU', `${c.cu} (${WFN[c.wf]||c.wf}): ${f.cls}`, f.fix, '', 'station details', (PKG.station||PKG.ifc) ? {doc:(PKG.station||PKG.ifc).id, page:c.page||s.st.pages[0], find:c.cu} : null); }); });
   /* CU list: unknown codes and description mismatches */
   if (CUDB && CUDB.n){ const sd = PKG.station||PKG.ifc; STN.forEach(s=>(s.st?.cus||[]).forEach(c=>{ const r=cuRec(c); const loc = sd ? {doc:sd.id, page:c.page||s.st.pages[0], find:c.cu} : null;
     if (!r) add(s.id,'warn','CU',`${c.cu} isn't in the compatible unit list`,`Check the spelling. If it's a new CU, update the CU list in Settings (${CUDB.name}).`,'','station details',loc);
@@ -1696,7 +1712,7 @@ function crossChecks(add){
     ['ARC flash', v=>pfNum(v), [V('Sketch',SK?.K.fields.arc,SK?.doc),V('JHA',PKG.jha?.data.arc,PKG.jha)]],
     ['Voltage', v=>pfNum(v), [V('Sketch',SK?.K.fields.voltage,SK?.doc),V('Job jacket',JO.voltage,JK)]],
     ['Designer', null, [V('IFC',PKG.ifc?.data.meta.designer,PKG.ifc),V('Sketch',SK?.K.fields.designer,SK?.doc),V('Environmental',PKG.env?.data.meta.designer,PKG.env),V('Job jacket',J0?.designer,JK),V('Job jacket name',JO.designerName,JK),...(PKG.njuns||[]).map(d=>V('NJUNS',d.data.contact,d)),...(PKG.t811||[]).slice(-1).map(d=>V('811',d.data.contact,d))]],
-    ['Pole count', v=>v, [V('WO details',WO?.meta.poleCount,PKG.wo),V('Station details',ST?.order.length,PKG.station||PKG.ifc),V('IFC design table',PKG.ifc?.data.order.length,PKG.ifc),V('PoleForeman',POLES.length||null,(PKG.pf||[])[0]),V('Sketch labels',SK?.K.labels.length,SK?.doc)]],
+    ['Pole count', v=>v, [V('WO details',WO?.meta.poleCount,PKG.wo),V('WO scope statement',WO?.meta.scopePoints,PKG.wo),V('WO work description',WO?.meta.wdPoints,PKG.wo),V('Station details',ST?.order.length,PKG.station||PKG.ifc),V('IFC design table',PKG.ifc?.data.order.length,PKG.ifc),V('PoleForeman',POLES.length||null,(PKG.pf||[])[0]),V('Sketch labels',SK?.K.labels.length,SK?.doc)]],
     ['Target finish', isoDate, [V('WO details',WO?.meta.targetFinish,PKG.wo),V('Job jacket',J0?.targetFinish,JK),...(PKG.njuns||[]).map(d=>V('NJUNS requested',d.data.requested,d))]],
     ['Commit date', isoDate, [V('Job jacket',J0?.commit||JO.commit,JK),V('Job cost summary',PKG.jobcost?.data.commit,PKG.jobcost)]],
   ].map(([name, norm, vals])=>{
@@ -1761,7 +1777,9 @@ function crossChecks(add){
 
   /* 811 */
   EXC = [];
-  const tickets = (PKG.t811||[]).map(d=>d.data).sort((a,b)=>String(a.dateObj).localeCompare(String(b.dateObj)));
+  const scanned811 = (PKG.t811||[]).filter(d=>!d.data.ticket && !(d.data.gps||[]).length);
+  if (scanned811.length) add(null,'info','811',`${scanned811.map(d=>d.name).join(', ')} has no readable text (scanned), so ticket checks were skipped`,'Review the 811 tickets by eye.','','811',{doc:scanned811[0].id,page:1});
+  const tickets = (PKG.t811||[]).filter(d=>d.data.ticket || (d.data.gps||[]).length).map(d=>d.data).sort((a,b)=>String(a.dateObj).localeCompare(String(b.dateObj)));
   const pts = tickets.flatMap(t=>t.gps.map(g=>({...g, t})));
   STN.forEach(s=>{ const d=s.d; if (d.lat==null) return;
     if (d.poleInst) EXC.push({s, what:'New pole', lat:d.lat, lon:d.lon, depth: s.ifc?.setting ?? d.setting});
@@ -2024,7 +2042,7 @@ function spacingLevels(P){
   r.equipment.forEach(e=>push('equip', e.attach, null, `${e.name}`, e.cat, {weight:e.weight}));
   const lv = {}; items.forEach(it=>{ (lv[it.attach]=lv[it.attach]||{attach:it.attach, items:[]}).items.push(it); });
   const levels = Object.values(lv).sort((a,b)=>a.attach-b.attach);
-  levels.forEach((L,i)=>{ L.gap = i<levels.length-1 ? levels[i+1].attach - L.attach : null; });
+  levels.forEach((L,i)=>{ L.gap = i<levels.length-1 ? Math.round((levels[i+1].attach - L.attach)*10)/10 : null; });
   return {r, levels, items};
 }
 const itemText = it => `${it.desc}${it.subs.size?` · ${[...it.subs].sort().join(', ')}`:''}`;
@@ -2355,7 +2373,7 @@ function cuFixes(s){
   const seen = {}; cus.forEach((c,i)=>{ const k=`${c.cu}|${c.wf}`; if (seen[k]!=null) put(i,'Duplicate CU',`${c.cu} (${WFN[c.wf]||c.wf}) is listed twice.`); else seen[k]=i; });
   if (s.d.agI.length) cus.forEach((c,i)=>{ if (c.wf==='I' && CU.gsi(c)) put(i,'CU Not Needed','GSI included in DG Macro CU.'); });
   const sv = sysLN();
-  if (sv) cus.forEach((c,i)=>{ if (!CU.xfmr(c)) return; const pri = pfNum((cuDesc(c).match(/(\d{4,5})\s*-\s*\d+\//)||[])[1]); if (pri && Math.abs(pri-sv.ln)/sv.ln > 0.07){ const rep = xfmrReplacement(c, sv.ln); put(i,'Incorrect CU',`${c.cu} is a ${pri.toLocaleString()} V transformer on a ${sv.kv} kV system (${Math.round(sv.ln).toLocaleString()} V). ${rep?`${WFN[c.wf]==='transfer'?'Transfer':'Use'} ${rep.cu} (${rep.d}).`:'Use the matching-voltage CU.'}`); } });
+  if (sv) cus.forEach((c,i)=>{ if (!CU.xfmr(c) || c.wf!=='I') return; const pri = pfNum((cuDesc(c).match(/(\d{4,5})\s*-\s*\d+\//)||[])[1]); if (pri && Math.abs(pri-sv.ln)/sv.ln > 0.07){ const rep = xfmrReplacement(c, sv.ln); put(i,'Incorrect CU',`${c.cu} is a ${pri.toLocaleString()} V transformer on a ${sv.kv} kV system (${Math.round(sv.ln).toLocaleString()} V). ${rep?`${WFN[c.wf]==='transfer'?'Transfer':'Use'} ${rep.cu} (${rep.d}).`:'Use the matching-voltage CU.'}`); } });
   const rows = scopeOf(s);
   const np = rows.find(r=>r.key==='newpole'); if (np && s.d.poleInst && s.pf && np.pf && np.pf.s==='bad') put(cus.indexOf(s.d.poleInst),'Incorrect CU',`PoleForeman models ${s.pf.R.poleSpec}; station installs ${s.d.poleInst.cu}.`);
   const gs = rows.find(r=>r.key==='guysize'); if (gs && gs.cu && gs.cu.s==='bad' && s.d.agI[0]) put(cus.indexOf(s.d.agI[0]),'Incorrect CU',`Guy size doesn't match PoleForeman (${gs.expect}).`);
@@ -2532,12 +2550,12 @@ function eqClass(c){
   if (/RECLOSER/.test(d)) return 'recloser';
   if (/SECTIONALIZER/.test(d)) return 'sectionalizer';
   if (/REGULATOR/.test(d)) return 'regulator';
-  if (/CAPACITOR/.test(d)) return 'capacitor';
+  if (/CAPACITOR|CAP\.?\s*BANK/.test(d)) return 'capacitor';
   if (/FAULT IND/.test(d)) return 'fault indicator';
   if (/RISER/.test(d)) return 'riser';
   if (/FUSE SWITCH|FUSE CUTOUT|\bCUTOUT\b|FUSE LINK|FUSE BARREL/.test(d) || /^(LSW|FSW|FUSE)/.test(code)) return 'fuse';
   if (/SWITCH/.test(d)) return 'switch';
-  if (/LIGHT|LUMINAIRE|LGTHEAD|LTHEAD/.test(d) && !/POLE/.test(d)) return 'light';
+  if ((cuRec(c)?.wt==='LGHT' || /LIGHT|LUMINAIRE|LGTHEAD|LTHEAD|\bHPS\b/.test(d)) && !/POLE,|\bPOLE\b.*(ALUM|STEEL|FIBERGLASS)/.test(d)) return 'light';
   if (/TRANSFORMER|\d+\s*KVA/.test(d) && !/BUSHING|BRACKET|BKT|MOUNT/.test(d)) return 'transformer';
   return null;
 }
