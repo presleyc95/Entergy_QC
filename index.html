@@ -469,7 +469,7 @@ function docClassify(pages, name) {
   if (has(/Scid:\s*\S+/) && has(/DLOC Number/i)) return 'photos';
   if (has(/Change Order \(DCO\)/)) return 'dco';
   if (has(/Voltage Drop and Flicker Worksheet/)) return 'vd';
-  if (has(/^JOB JACKET\.?$/m)) return 'jacket';
+  if (has(/^JOB JACKET\.?(\s|$)/m) || (has(/JOB JACKET/) && has(/ETRLOCALOFFICE|WORKORDER/))) return 'jacket';
   if (has(/Device ID Generator/)) return 'deviceid';
   if (has(/IFC: Cover Page/) || (has(/Design Summary Table/) && has(/Station Details/))) return 'ifc';
   if (has(/CUE Estimate Station Details/)) return 'station';
@@ -484,6 +484,9 @@ function docClassify(pages, name) {
   if (has(/Job Hazard Analysis/)) return 'jha';
   if (has(/Circuit Bkr ID/) && has(/Scale\s*1"/)) return 'sketch';
   if (has(/Vicinity Map/) || /vicinity/i.test(n)) return 'vicinity';
+  if (/inspection/i.test(n) || has(/Inspection (Sheet|Form|Report)/i)) return 'inspection';
+  const pgT = p => [...p.lines.map(l=>l.text), ...(p.annots||[]).map(a=>a.text)].join(' ');
+  if (pages.length && pages.every(p => p.lines.length <= 14) && pages.filter(p => /DLOC/i.test(pgT(p)) && /\bLAT(itude)?\b/i.test(pgT(p))).length >= Math.max(1, pages.length * 0.6)) return 'photos';
   if (/photo/i.test(n) || (!T.trim() && pages.length)) return 'photos';
   if (/sketch/i.test(n)) return 'sketch';
   return 'unknown';
@@ -538,6 +541,7 @@ function parseWO(pages) {
   if ((m = T.match(/Pole Count:\s*(\d+)/))) W.meta.poleCount = +m[1];
   if ((m = T.match(/Start:\s*DLOC\s*(\d+)/))) W.meta.startDloc = m[1];
   if ((m = T.match(/End:\s*DLOC\s*(\d+)/))) W.meta.endDloc = m[1];
+  if ((m = T.match(/(The scope of this work order[\s\S]*?)\n\s*Asset:/i))) W.meta.scope = m[1].replace(/\s+/g,' ').trim();
   const approvals = [...T.matchAll(/Approval Amount-\s*\$\s*([\d,]+\.\d{2})/g)].map(x => pfNum(x[1]));
   W.meta.approvals = approvals;
   const addr = T.match(/Street Address -\s*(.+)/); if (addr) W.meta.address = addr[1].trim();
@@ -567,12 +571,13 @@ function parseWO(pages) {
     if (sec === 'svc' && /^\d+$/.test(c[0]) && c.length >= 4) { W.services.push({ task: c[0], item: c[1], desc: c[2], qty: pfNum(c[3]), cost: pfNum(c[c.length - 1]) }); return; }
     if (sec === 'log') {
       if (/^\d+\/\d+\/\d+$/.test(c[0]) && c.length >= 3) {
-        const e = { date: c[0], cls: c[1], by: c[2], desc: c.slice(3).join(' ') }; W.log.push(e);
+        const e = { date: c[0], cls: c[1], by: c[2], desc: c.slice(3).join(' '), text: [], page: L.pageNo }; W.log.push(e);
         wd = /Work Description/.test(t); pn = /Purpose & Necessity/.test(t) ? '' : null;
         if (pn != null) { pn = t.replace(/^.*Purpose & Necessity\s*/, ''); W.meta.pn = pn; }
         if (wd) { const lastCell = c[c.length - 1]; if (/^[A-Z]{0,3}\d{1,4}$/.test(lastCell)) startNote(lastCell, L.pageNo); }
         return;
       }
+      const le = W.log[W.log.length - 1]; if (le) le.text.push(t);
       if (pn != null) { W.meta.pn = (W.meta.pn + ' ' + t).trim(); return; }
       if (wd) {
         if (/^[A-Z]{0,3}\d{1,4}$/.test(t)) { startNote(t, L.pageNo); return; }
@@ -587,6 +592,7 @@ function parseWO(pages) {
   });
   function startNote(id, pg) { W.notes[id] = { id, dloc: null, lat: null, lon: null, raw: [], notes: [], page: pg }; W.noteOrder.push(id); }
   Object.values(W.notes).forEach(n => { n.notes = sentences(n.raw.join(' ')); delete n.inNotes; });
+  W.log.forEach(e => { e.text = e.text.join('\n'); e.kind = /Auto Generated Notification|Please be informed/i.test(e.text + ' ' + e.desc) ? 'notification' : /Work Description/i.test(e.desc) ? 'workdesc' : /Purpose & Necessity/i.test(e.desc) ? 'pn' : 'note'; });
   if (W.meta.pn) { const mm = W.meta.pn.match(/total cost[^$]*\$\s*([\d.,]+)/i); if (mm) { W.meta.pnCostText = mm[1].replace(/\.$/, ''); } }
   return W;
 }
@@ -662,6 +668,21 @@ function parseSketch(pages, pageNo) {
     });
   });
   K.w = p.w; K.h = p.h;
+  const tl = p.lines.map(l => ({ text: l.text, x0: l.xs[0], x1: (l.xe || l.xs)[l.cells.length - 1] || l.xs[0] + 40, y0: l.y - 9, y1: l.y + 1, h: 10 }));
+  const annCallouts = [];
+  (p.annots || []).forEach(a => { const parts = String(a.text).split(/[\r\n]+/).map(t => t.trim()).filter(Boolean); if (!parts.length || a.x0 == null) return;
+    const lh = Math.max(8, Math.min(14, (a.y1 - a.y0) / parts.length)); const al = parts.map((t, i) => ({ text: t, x0: a.x0 + 2, x1: a.x1, y0: a.y0 + i * lh, y1: a.y0 + (i + 1) * lh - 1, h: lh - 1 }));
+    const T = parts.join('\n'); let m;
+    if ((m = T.match(/Primary Voltage:\s*([\d.]+\s*kV)/i))) K.fields.voltage = m[1];
+    if ((m = T.match(/Protection Device:\s*(.+)/i))) K.fields.protection = m[1].trim();
+    if ((m = T.match(/Feeder:\s*(\S+)/i))) K.fields.feeder = m[1];
+    if ((m = T.match(/ARC Flash:\s*([\d.]+)/i)) && !K.fields.arc) K.fields.arc = m[1];
+    if (/DLOC/i.test(T) || (/^Lat/im.test(T) && /^Lon/im.test(T))) { const c = ocrCallouts(al)[0]; if (c) { c.box = { x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1 }; c.fromAnnot = true; annCallouts.push(c); } }
+    else al.forEach(l => tl.push(l)); });
+  const textCallouts = ocrCallouts(tl).filter(c => !annCallouts.some(a => a.dloc && a.dloc === c.dloc));
+  K.callouts = [...annCallouts, ...textCallouts];
+  annCallouts.forEach(c => c.lines.forEach((t, i) => tl.push({ text: t, x0: c.box.x0, x1: c.box.x1, y0: c.box.y0 + i * 10, y1: c.box.y0 + i * 10 + 9, h: 9 })));
+  K.textLines = tl.map(l => ({ t: l.text, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 }));
   return K;
 }
 
@@ -880,7 +901,10 @@ function parseJacket(pages) {
     }
     if (c[0] === 'Local Office Name') { const n = p.lines[li + 1]; if (n) { J.officeName = n.cells[0]; J.network = n.cells[1]; J.networkCode = n.cells[2]; J.region = n.cells[3]; } }
   });
-  pages.forEach(pp => pp.lines.forEach(L => { const m = L.text.match(/workorderid\s*=\s*(\d+)/); if (m) J.workorderid = m[1]; }));
+  pages.forEach(pp => pp.lines.forEach(L => { let m = L.text.match(/workorderid\s*=\s*(\d+)/); if (m) J.workorderid = m[1];
+    if ((m = L.text.match(/Commit Date:\s*([\d\/]+)/i))) J.commit = m[1];
+    if ((m = L.text.match(/^JOB JACKET\.?\s+(\S.*)$/))) J.title = m[1].trim();
+    if (L.cells.some(c => /^(OH|UG)$/.test(c))) J.ohug = L.cells.find(c => /^(OH|UG)$/.test(c)); }));
   return J;
 }
 function parseJacketOCR(lines) {
@@ -890,7 +914,8 @@ function parseJacketOCR(lines) {
   const below = (L, n) => { const out = []; let last = L; for (const l of lines) { if (out.length >= n) break; if (l.y0 <= last.y0 + 2 || Math.abs(l.x0 - L.x0) > 45) continue; if (l.y0 - last.y1 > (L.h || 30) * 2.2) break; out.push(l.text); last = l; } return out; };
   const field = (re, n) => { const L = lines.find(l => re.test(l.text)); if (!L) return null; const after = L.text.replace(re, '').replace(/^\s*[:;]\s*/, '').trim(); return after ? [after, ...below(L, n - 1)] : below(L, n); };
   let v, m;
-  if ((m = T.match(/Man\s*Hours\s*[:;]\s*([\d.,]+)/i))) O.manHours = pfNum(m[1]);
+  if ((m = T.match(/(Onsite\s*)?Man\s*-?\s*Hours\s*[:;]?\s*([\d.,]+)/i))) { O.manHours = pfNum(m[2]); O.manHoursOnsite = !!m[1]; }
+  if ((m = T.match(/Line\s*Voltage\s*[:;]?\s*([\d.]+\s*kV)/i))) O.voltage = m[1];
   if ((v = field(/^Upstream\s*Device\s*[:;]?/i, 1)) && v[0]) O.upstream = v[0].trim();
   if ((m = T.match(/\b(\d+(?:\.\d+)?)\s*kV\s*(OH|UG)?\b/i))) O.voltage = m[0].trim();
   if ((v = field(/^Designer\s*Name\s*[:;]?/i, 1)) && v[0]) O.designerName = v[0].trim();
@@ -905,9 +930,13 @@ function parseJacketOCR(lines) {
 /* ================= photo labels (field app overlay: Scid / DLOC / Lat / Long) ================= */
 function parsePhotoText(pages) {
   return pages.map(p => {
-    const T = p.lines.map(l => l.text).join('\n'); if (!/Scid:/i.test(T)) return null;
+    const lines = [...p.lines.map(l => l.text), ...(p.annots || []).flatMap(a => String(a.text).split(/[\r\n]+/))].map(t => t.trim()).filter(Boolean);
+    const T = lines.join('\n'); if (!/DLOC/i.test(T)) return null;
     const g = re => (T.match(re) || [])[1] || null;
-    return { id: g(/Scid:\s*([A-Za-z0-9\-]+)/i), dloc: g(/DLOC Number:?\s*\n?\s*(\d{6,})/i), lat: g(/Latitude:?\s*\n?\s*(-?\d+\.\d+)/i), lon: g(/Longitude:?\s*\n?\s*(-?\d+\.\d+)/i), src: 'text', text: T.slice(0, 300) };
+    let id = g(/Scid:\s*([A-Za-z0-9\-]+)/i);
+    if (!id) { const di = lines.findIndex(l => /DLOC/i.test(l)); for (let k = di - 1; k >= 0 && k >= di - 3; k--) { const m = lines[k].match(/^([A-Z]{0,4}\s?-?\d{1,4}[A-Z]?)$/i); if (m) { id = m[1].replace(/\s|-/g, ''); break; } }
+      if (!id) id = g(/^([A-Z]{1,4}\d{1,4})\b/im); }
+    return { id, dloc: g(/DLOC(?:\s*(?:Number|#|No\.?))?\s*[:;.]?\s*\n?\s*(\d{6,})/i), lat: g(/LAT(?:itude)?\s*[:;.]?\s*\n?\s*(-?\d+\.\d+)/i), lon: g(/LONG?(?:itude)?\s*[:;.]?\s*\n?\s*(-?\d+\.\d+)/i), src: /Scid:/i.test(T) ? 'scid' : 'text', text: T.slice(0, 300) };
   });
 }
 
@@ -943,21 +972,35 @@ function tsvLines(tsv) {
 const ocrNormP = s => String(s).replace(/\bP\s?[O0o]\s?([0-9SsIlOo])\b/g, (m, d) => 'P0' + ({ S: '5', s: '5', I: '1', l: '1', O: '0', o: '0' }[d] || d));
 const ocrDigits = s => String(s).replace(/[Oo]/g, '0').replace(/[Il|]/g, '1').replace(/S/g, '5');
 function ocrCallouts(lines) {
-  lines = lines.map(l => ({ ...l, text: ocrNormP(l.text.trim()) })).sort((a, b) => a.y0 - b.y0);
-  const out = [];
-  lines.forEach(d => {
-    const m = d.text.match(/^D\s?L\s?O\s?C\s*[:;.]?\s*([0-9OoIl]{6,})/i); if (!m) return;
-    const lh = d.h || 20;
-    const head = lines.filter(l => l !== d && l.y1 <= d.y0 + 4 && d.y0 - l.y1 < lh * 1.6 && Math.abs(l.x0 - d.x0) < lh * 1.2 && /^[A-Z]{0,3}\d{1,4}\b/.test(l.text)).sort((a, b) => b.y1 - a.y1)[0];
-    const blk = [d]; let last = d;
-    const cand = lines.filter(l => l.y0 > d.y0 + 2 && Math.abs(l.x0 - d.x0) < lh * 1.2).sort((a, b) => a.y0 - b.y0);
-    for (const l of cand) { if (l.y0 - last.y1 > lh * 1.6) break; if (/^D\s?L\s?O\s?C/i.test(l.text) || /^[A-Z]{1,3}\d{2,4}$/.test(l.text)) break; blk.push(l); last = l; }
+  lines = lines.map(l => ({ ...l, text: ocrNormP(String(l.text).replace(/\s+/g, ' ').trim()) })).filter(l => l.text).sort((a, b) => a.y0 - b.y0);
+  const out = [], used = new Set();
+  const isHead = t => /^[A-Z]{0,3}\s?-?\d{1,4}[A-Z]?\s*[:.]?$/.test(t) && !/^\d+$/.test(t);
+  const isField = t => /^(D\s?L\s?O\s?C|Lat|Lon|Address|Notes?|Install|Replace|Remove|Transfer|Straighten|Add|Truck|Existing|Relocate|Set|Pole)/i.test(t);
+  const collect = (start, lh) => { const blk = [start]; let last = start;
+    const cand = lines.filter(l => l !== start && l.y0 > start.y0 + 1 && Math.abs(l.x0 - start.x0) < lh * 2.4).sort((a, b) => a.y0 - b.y0);
+    for (const l of cand) { const gap = l.y0 - last.y1; if (gap > lh * 3.4) break; if (gap > lh * 1.8 && !isField(l.text) && !/[a-z]{3}/i.test(l.text)) break; if (/^D\s?L\s?O\s?C/i.test(l.text) && blk.some(b => /^D\s?L\s?O\s?C/i.test(b.text))) break; if (isHead(l.text) && blk.length > 1) break; blk.push(l); last = l; }
+    return blk; };
+  const finish = (head, blk) => {
     const txt = blk.map(b => b.text);
     const g = re => { const x = txt.find(t => re.test(t)); return x ? x.match(re)[1] : null; };
-    const ni = txt.findIndex(t => /^Notes?\s*[:;]?/i.test(t));
-    const ai = txt.findIndex(t => /^Address/i.test(t));
-    out.push({ id: head ? (head.text.match(/^([A-Z]{0,3}\d{1,4})/) || [])[1] : null, dloc: ocrDigits(m[1]), lat: g(/^Lat\w*\s*[:;.]?\s*(-?[\d.]+)/i), lon: g(/^Lon\w*\s*[:;.]?\s*(-?[\d.]+)/i), addr: ai >= 0 && ai + 1 < txt.length && ai + 1 !== ni ? txt[ai + 1] : null, notes: ni >= 0 ? txt.slice(ni + 1) : [], lines: txt, box: { x0: Math.min(...blk.map(b => b.x0), head ? head.x0 : 1e9), y0: head ? head.y0 : d.y0, x1: Math.max(...blk.map(b => b.x1)), y1: last.y1 } });
+    const dl = txt.find(t => /^D\s?L\s?O\s?C/i.test(t)); const dlm = dl && dl.match(/([0-9OoIl]{6,})/);
+    const ni = txt.findIndex(t => /^Notes?\s*[:;]?/i.test(t)); const ai = txt.findIndex(t => /^Address/i.test(t));
+    const notes = ni >= 0 ? txt.slice(ni + 1) : txt.filter(t => /^(Install|Replace|Remove|Transfer|Straighten|Add|Truck|Relocate|Set)/i.test(t));
+    blk.forEach(b => used.add(b));
+    const all = head ? [head, ...blk] : blk;
+    return { id: head ? (head.text.match(/^([A-Z]{0,3})\s?-?(\d{1,4}[A-Z]?)/) || []).slice(1).join('') : null, dloc: dlm ? ocrDigits(dlm[1]) : null, lat: g(/^Lat\w*\s*[:;.]?\s*(-?[\d.]{3,})/i), lon: g(/^Lon\w*\s*[:;.]?\s*(-?[\d.]{3,})/i), addr: ai >= 0 && ai + 1 < txt.length && ai + 1 !== ni ? txt[ai + 1] : null, notes, lines: txt, box: { x0: Math.min(...all.map(b => b.x0)), y0: Math.min(...all.map(b => b.y0)), x1: Math.max(...all.map(b => b.x1)), y1: Math.max(...all.map(b => b.y1)) } };
+  };
+  // pass 1: blocks anchored on a DLOC line
+  lines.forEach(d => { if (used.has(d) || !/^D\s?L\s?O\s?C\s*[:;.]?\s*[0-9OoIl]{6,}/i.test(d.text) && !/^D\s?L\s?O\s?C\s*[:;.]?$/i.test(d.text)) return;
+    const lh = d.h || 20;
+    const head = lines.filter(l => l !== d && !used.has(l) && l.y1 <= d.y0 + 4 && d.y0 - l.y1 < lh * 3 && Math.abs(l.x0 - d.x0) < lh * 2.4 && isHead(l.text)).sort((a, b) => b.y1 - a.y1)[0];
+    let blk = collect(d, lh);
+    if (/^D\s?L\s?O\s?C\s*[:;.]?$/i.test(d.text)) { const nx = blk[1]; if (nx && /^[0-9OoIl]{6,}$/.test(nx.text)) { d.text = 'DLOC: ' + nx.text; blk.splice(1, 1); } }
+    if (head) used.add(head);
+    out.push(finish(head, blk));
   });
+  // pass 2: blocks that start with a pole label and carry Lat/Long but no readable DLOC
+  lines.forEach(h => { if (used.has(h) || !isHead(h.text)) return; const lh = h.h || 20; const blk = collect(h, lh).slice(1); if (!(blk.some(b => /^Lat/i.test(b.text)) && blk.some(b => /^Lon/i.test(b.text)))) return; used.add(h); out.push(finish(h, blk)); });
   return out;
 }
 function ocrLabelBlock(lines) {
@@ -1005,9 +1048,9 @@ const SORT = {};
 let FIL = {status:'', rules:'', q:'', review:false, sev:'', cat:''};
 
 const KINDS = {
-  pf:{n:'PoleForeman reports', need:true}, station:{n:'Station Details & Job Instructions', need:true}, ifc:{n:'IFC package'}, sketch:{n:'Job sketch', need:true},
+  pf:{n:'PoleForeman reports', need:true}, station:{n:'Station Details & Job Instructions', need:true}, ifc:{n:'IFC package (not checked)'}, sketch:{n:'Job sketch', need:true},
   wo:{n:'Work Order Details', need:true}, jobcost:{n:'Job Cost Summary'}, costdist:{n:'Cost Distribution Summary'}, labor:{n:'Labor Summary'}, material:{n:'Material Summary'},
-  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, dco:{n:'DCO form'}, vd:{n:'Voltage drop / flicker worksheet'}, jacket:{n:'Job jacket'}, deviceid:{n:'Device ID generator'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, unknown:{n:'Not recognized'}
+  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, dco:{n:'DCO form'}, vd:{n:'Voltage drop / flicker worksheet'}, jacket:{n:'Job jacket'}, deviceid:{n:'Device ID generator'}, inspection:{n:'Inspection sheet'}, scopeimg:{n:'Scope image'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, unknown:{n:'Not recognized'}
 };
 
 /* ---------- pdf helpers ---------- */
@@ -1021,7 +1064,7 @@ async function textPages(pdf, onStep){
     onStep && onStep(`Reading page ${i} of ${pdf.numPages}`);
     const p=await pdf.getPage(i); const vp=p.getViewport({scale:1});
     const tc=await p.getTextContent();
-    let annots=[]; try { annots=(await p.getAnnotations()).filter(a=>(a.contentsObj&&a.contentsObj.str)||(typeof a.fieldValue==='string'&&a.fieldValue)).map(a=>{ const t=pdfjsLib.Util.transform(vp.transform,[1,0,0,1,a.rect[0],a.rect[3]]); return {text:String(a.fieldValue||a.contentsObj.str), x:t[4], y:t[5]+(a.rect[3]-a.rect[1])*0.7}; }); } catch(e){}
+    let annots=[]; try { annots=(await p.getAnnotations()).filter(a=>(a.contentsObj&&a.contentsObj.str)||(typeof a.fieldValue==='string'&&a.fieldValue)).map(a=>{ const t=pdfjsLib.Util.transform(vp.transform,[1,0,0,1,a.rect[0],a.rect[3]]); return {text:String(a.fieldValue||a.contentsObj.str), x:t[4], y:t[5]+(a.rect[3]-a.rect[1])*0.7, x0:t[4], y0:t[5], x1:t[4]+(a.rect[2]-a.rect[0]), y1:t[5]+(a.rect[3]-a.rect[1])}; }); } catch(e){}
     pages.push({pageNo:i, lines:pfPageLines(tc.items, vp.transform, pdfjsLib.Util.transform), annots, w:vp.width, h:vp.height});
   }
   return pages;
@@ -1058,6 +1101,7 @@ async function pfRecords(pdf, pages, docId, fileName, onStep){
 }
 
 /* ---------- reading a file ---------- */
+async function readImage(file){ const url = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); return { id:'d'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), name:file.name, kind:'scopeimg', pages:1, added:Date.now(), bytes:null, data:{ img:url } }; }
 async function readDoc(file, onStep){
   if (!window.pdfjsLib) throw new Error('The PDF reader library did not load. Check your connection and reload.');
   const bytes = await file.arrayBuffer();
@@ -1082,6 +1126,7 @@ async function readDoc(file, onStep){
   else if (K==='njuns') rec.data = parseNJUNS(pages);
   else if (K==='env') rec.data = parseEnv(pages);
   else if (K==='jha') rec.data = parseJHA(pages);
+  else if (K==='inspection') { const ps=[]; for (let i=1;i<=pdf.numPages;i++){ const cv=await renderPage(pdf,i,1.2); const t=pages[i-1].lines.map(l=>l.text).join('\n'); ps.push({page:i, img:cv.toDataURL('image/jpeg',0.75), text:t}); } rec.data = {pages:ps}; }
   else if (K==='dco') rec.data = parseDCO(pages);
   else if (K==='vd') rec.data = parseVD(pages, file.name);
   else if (K==='deviceid') rec.data = parseDeviceIDs(pages);
@@ -1101,6 +1146,7 @@ async function handleFiles(files){
   for (const f of files.sort((a,b)=>natural(a.name,b.name))){
     const li=document.createElement('li'); li.innerHTML=`<span>${esc(f.name)}</span><span>Waiting</span>`; $('#fileList').appendChild(li); const st=li.lastChild;
     if (/\.xlsx$/i.test(f.name)){ st.textContent='Checking spreadsheet…'; let ok=false, what=''; const bytes = await f.arrayBuffer(); try { const W = await scOpen(bytes.slice(0)); if (W.sheets['Design Scorecard']) { ok = await saveTemplate(f); what='Scorecard template saved'; } else { ok = await saveCUList(bytes, f.name); what='Compatible unit list saved'; } } catch(e){} st.textContent = ok ? what : 'Not a scorecard template or CU list'; st.className = ok ? 'g' : 'e'; continue; }
+    if (/\.(png|jpe?g|webp)$/i.test(f.name)){ const rec = await readImage(f); DOCS.push(rec); dbPut(rec); st.textContent='Scope image'; st.className='g'; ok++; continue; }
     if (!/\.pdf$/i.test(f.name)){ st.textContent='Not a PDF'; st.className='e'; bad.push(f.name); continue; }
     try {
       const rec = await readDoc(f, s=>st.textContent=s);
@@ -1117,7 +1163,7 @@ async function handleFiles(files){
 }
 const drop=$('#drop');
 $('#pick').onclick=()=>$('#file').click(); $('#addMore').onclick=()=>$('#file').click();
-$('#file').onchange=e=>{ const fs=[...e.target.files]; e.target.value=''; handleFiles(fs); };
+$('#file').setAttribute('accept','application/pdf,.pdf,.xlsx,.png,.jpg,.jpeg,.webp'); $('#file').onchange=e=>{ const fs=[...e.target.files]; e.target.value=''; handleFiles(fs); };
 ['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault(); drop.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault(); if(ev==='drop'||e.target===document.documentElement) drop.classList.remove('over');}));
 document.addEventListener('drop',e=>{ const fs=e.dataTransfer?.files; if(fs&&fs.length) handleFiles(fs); });
@@ -1143,7 +1189,7 @@ async function tess(onP){
 let ocrP = null;
 async function ocrTSV(cv){ const w = await tess(p=>ocrP&&ocrP(p)); const r = await w.recognize(cv, {}, {tsv:true, text:false, blocks:false, hocr:false}); return r.data.tsv || ''; }
 function ocrStatus(t){ const el=$('#ocrState'); if(!el) return; el.hidden=!t; el.textContent=t||''; }
-function needsOCR(){ return DOCS.filter(d => (d.kind==='sketch' && !d.data.ocr) || (d.kind==='ifc' && d.data.sketchPage && !d.data.ocr && !DOCS.some(x=>x.kind==='sketch')) || (d.kind==='photos' && d.data.pages.some(p=>!p.ocr)) || (d.kind==='vicinity' && !d.data.ocr) || (d.kind==='jacket' && !d.data.ocr)); }
+function needsOCR(){ return DOCS.filter(d => (d.kind==='sketch' && !d.data.ocr && (d.data.sketch.callouts||[]).filter(c=>c.dloc).length < Math.max(1,(d.data.sketch.labels||[]).length)) || (d.kind==='ifc' && d.data.sketchPage && !d.data.ocr && (d.data.sketch?.callouts||[]).filter(c=>c.dloc).length < Math.max(1,(d.data.sketch?.labels||[]).length) && !DOCS.some(x=>x.kind==='sketch')) || (d.kind==='photos' && d.data.pages.some(p=>!p.ocr)) || (d.kind==='vicinity' && !d.data.ocr) || (d.kind==='jacket' && !d.data.ocr)); }
 function queueOCR(force){ if (!force && !S.ocrAuto) return; runOCR(); }
 async function runOCR(){
   if (OCRBUSY) return; const todo = needsOCR(); if (!todo.length) { toast('All text has been read'); return; }
@@ -1249,6 +1295,8 @@ function sketchSrc(){
   return null;
 }
 let SK = null, ST = null, WO = null, JK = null;
+/* sketch callouts: read from the PDF text / text boxes when present, otherwise from the image */
+function skCO(){ if (!SK) return null; const t = (SK.K.callouts || []).filter(c=>c.dloc || c.lat); if (SK.ocr && SK.ocr.callouts.length > t.length) return SK.ocr; if (t.length) return { scale:1, callouts:t, lines:SK.K.textLines||[], text:true }; return SK.ocr || null; }
 // PL01, P1, P-01, POLE 1 and 01 all mean pole P01
 const nkey = s => { const t=String(s||'').toUpperCase().replace(/[\s_\-.#]+/g,''); const m=t.match(/^(?:P|PL|PO|POL|POLE|STA|STN|STATION)?0*(\d{1,4})([A-Z]?)$/); return m ? 'P'+(+m[1])+m[2] : t; };
 const canon = s => { const k=nkey(s); const m=k.match(/^P(\d+)([A-Z]?)$/); return m ? 'P'+m[1].padStart(2,'0')+m[2] : String(s); };
@@ -1287,7 +1335,7 @@ function buildStations(){
   POLES.forEach(P=>{ const s=map.get(nkey(P.id)); if (s && !s.pf) s.pf=P; else { const n=get(P.id); if (!n.pf) n.pf=P; } });
   (SK?.K.labels||[]).forEach(l=>{ const s=map.get(nkey(l.id)) || get(l.id); s.skLabel=l; });
   map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
-  (SK?.ocr?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
+  (skCO()?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
   const all = order.map(k=>map.get(k));
   // photos
   const ph = PKG.photos?.data.pages||[];
@@ -1313,7 +1361,7 @@ function buildStations(){
 }
 
 /* ---------- scope trace: each piece of work, across every document ---------- */
-const COLS = [['cu','Station details'],['wo','WO notes'],['ifc','IFC design table'],['sk','Job sketch'],['pf','PoleForeman']];
+const COLS = [['cu','Station details'],['wo','WO notes'],['sk','Job sketch'],['pf','PoleForeman']];
 const COLN = {cu:'station details', wo:'WO notes', ifc:'IFC design table', sk:'job sketch', pf:'PoleForeman report'};
 const C = { ok:(t)=>({s:'ok',t}), bad:(t)=>({s:'bad',t}), warn:(t)=>({s:'warn',t}), miss:(t)=>({s:'miss',t:t||'not called out'}), na:(t)=>({s:'',t:t||''}), none:(t)=>({s:'none',t}) };
 function scopeOf(s){
@@ -1321,13 +1369,13 @@ function scopeOf(s){
   const d = s.d, rows = [];
   const src = {
     wo: s.wo ? s.wo.notes.join(' ') : null,
-    ifc: s.ifc ? [s.ifc.comments, s.ifc.anchor, s.ifc.equipment].filter(Boolean).join('. ') : null,
+    ifc: null,
     sk: s.sk ? s.sk.notes.join(' ') : null,
   };
-  const noSrc = { wo: WO ? 'no note for this pole' : 'no WO document', ifc: PKG.ifc ? 'no row for this pole' : 'no IFC package', sk: !SK ? 'no sketch' : !SK.ocr ? 'sketch text not read' : 'callout not found' };
+  const noSrc = { wo: WO ? 'no note for this pole' : 'no WO document', ifc: PKG.ifc ? 'no row for this pole' : 'no IFC package', sk: !SK ? 'no sketch' : !skCO() ? 'sketch text not read' : 'callout not found' };
   const has = (k,re) => src[k]!=null && re.test(src[k]);
   const T = (k, found, okText) => src[k]==null ? C.none(noSrc[k]) : found ? C.ok(okText||'called out') : C.miss();
-  const skGlobal = SK?.ocr ? SK.ocr.lines.map(l=>l.t).join('\n') : '';
+  const skGlobal = skCO() ? (skCO().lines||[]).map(l=>l.t).join('\n') : '';
   const row = (o) => { rows.push(o); return o; };
 
   /* pole replacement */
@@ -1346,12 +1394,6 @@ function scopeOf(s){
       wo: cmpP('wo', poleFromText(src.wo), src.wo), ifc: s.ifc ? cmpP('ifc', ifcP, '') : C.none(noSrc.ifc), sk: cmpP('sk', poleFromText(src.sk), src.sk),
       pf: !s.pf ? C.none('no report') : (d.pfSpec.len && exp && (d.pfSpec.len!==exp.h || d.pfSpec.c!==exp.c)) ? C.bad(`models ${s.pf.R.poleSpec}`) : C.ok(s.pf.R.poleSpec||''),
       req: { cu:true, wo:!!pI, ifc:!!(pI&&s.ifc), sk:!!pI } });
-    if (pI && (s.ifc?.setting!=null || d.setting!=null)){
-      const iv=s.ifc?.setting, pv=d.setting;
-      row({ key:'setting', label:'Setting depth', cat:'Pole', cu:C.na(), wo:C.na(), sk:C.na(),
-        ifc: iv==null ? C.none(s.ifc?'not stated':noSrc.ifc) : (pv!=null && iv!==pv ? C.bad(`${iv}'`) : C.ok(`${iv}'`)),
-        pf: pv==null ? C.none('no report') : C.ok(`${pv}'`), req:{} });
-    }
   }
 
   /* guying */
@@ -1459,7 +1501,7 @@ function scopeOf(s){
 
   /* primary framing */
   const cuF = d.cus.filter(c=>c.wf==='I'&&CU.primFrame(c));
-  const ifcF = s.ifc ? [...String(s.ifc.framing).matchAll(/P[0-9A-Z]*?\d+A\d+/gi)].map(m=>m[0]) : [];
+  const ifcF = [];
   const b = baseRule(s.pf?.R);
   const pfF = b ? [...new Set(b.spans.flatMap(sp=>sp.wires.filter(w=>/primary/i.test(w.kind) && w.framing && !/^\(L\)/.test(w.framing)).map(w=>(w.framing.match(/\b(P[0-9A-Z]{0,3}\d{1,2})\b/)||[])[1]).filter(Boolean)))] : [];
   if (cuF.length || ifcF.length){
@@ -1473,6 +1515,40 @@ function scopeOf(s){
   s._scope = rows;
   return rows;
 }
+
+/* ---------- design features (what the design actually does at each pole) ---------- */
+const FEAT = [
+  { key:'pole', label:'Replace pole', re:/replac\w*\s+(?:\w+\s+){0,3}poles?|pole replacement|new poles?|set\w*\s+(?:a\s+)?(?:new\s+)?poles?/i, big:true },
+  { key:'straighten', label:'Straighten pole', re:/straighten|plumb/i },
+  { key:'hendrix', label:'Hendrix', re:/hendrix/i },
+  { key:'guy', label:'New down guy / anchor', re:/\bguy|anchor/i },
+  { key:'reconductor', label:'Reconductor', re:/reconductor|re-conductor|replace\w*\s+(?:the\s+)?(?:conductor|wire|neutral)/i, big:true },
+  { key:'xfmr', label:'New / replaced transformer', re:/transformer|xfmr/i, big:true },
+  { key:'fuse', label:'Fuse / switch', re:/\bfuse|cutout|switch/i },
+  { key:'recloser', label:'Recloser', re:/recloser/i, big:true },
+  { key:'capacitor', label:'Capacitor', re:/capacitor/i, big:true },
+  { key:'regulator', label:'Regulator', re:/regulator/i, big:true },
+  { key:'arrester', label:'Arrester', re:/arrester/i },
+  { key:'riser', label:'Riser', re:/riser/i },
+  { key:'frame', label:'Reframe', re:/fram(e|ing)|crossarm/i },
+];
+function designFeatures(s){
+  const d = s.d, cus = d.cus, out = {};
+  const put = (k, c) => { (out[k] = out[k] || []).push(c); };
+  cus.forEach(c=>{ const e = eqClass(c), wt = cuRec(c)?.wt || '';
+    if (c.wf==='I' && CU.pole(c)) put('pole', c);
+    if (CU.straighten(c)) put('straighten', c);
+    if (CU.hendrix(c)) put('hendrix', c);
+    if (c.wf==='I' && CU.ag(c)) put('guy', c);
+    if (e==='transformer' && c.wf!=='T') put('xfmr', c);
+    if (['fuse','switch'].includes(e) && c.wf!=='T') put('fuse', c);
+    ['recloser','capacitor','regulator','arrester','riser'].forEach(k=>{ if (e===k && c.wf!=='T') put(k, c); });
+    if (c.wf==='I' && wt==='STRN' && /CONDUCTOR|AAAC|ACSR|\bAAC\b|COPPER/i.test(cuDesc(c)) && !/HANDLING|HANDLE/i.test(cuDesc(c)) && (c.qty||0) >= 20) put('reconductor', c);
+    if (c.wf==='I' && CU.primFrame(c)) put('frame', c);
+  });
+  return out;
+}
+function scopeText(){ return [WO?.meta.scope, WO?.meta.pn].filter(Boolean).join(' '); }
 
 
 /* ---------- checks ---------- */
@@ -1488,6 +1564,12 @@ function runChecks(dupPF){
   (dupPF||[]).forEach(id=>add(PF2ST[id]||id,'warn','Report',`More than one PoleForeman report for ${id}`,'The last one read is used.','', 'PoleForeman'));
   crossChecks(add);
   ISS.forEach(i=>{ if (!i.loc) i.loc = locFor(i); });
+  /* less noise: one entry per finding (250B and 250C merged), and CU-list notes grouped across poles */
+  const merged = new Map(); ISS.forEach(i=>{ const k=`${i.pole}|${i.sev}|${i.cat}|${i.title}`; const m=merged.get(k); if (m){ if (i.rule && !m.rule.split(', ').includes(i.rule)) m.rule = m.rule ? m.rule+', '+i.rule : i.rule; } else merged.set(k, i); });
+  let list = [...merged.values()];
+  const grp = new Map(); list = list.filter(i=>{ const m = i.cat==='CU' && i.title.match(/^(\S+?):? (isn't in the compatible unit list|description differs from the CU list|is an underground CU.*)$/); if (!m) return true; const k=i.sev+'|'+i.title; const g=grp.get(k); if (g){ g.poles.push(i.pole); return false; } i.poles=[i.pole]; grp.set(k,i); return true; });
+  grp.forEach(i=>{ if (i.poles.length>1){ i.detail = `${i.poles.join(', ')}. ${i.detail||''}`.trim(); i.pole='Project'; } });
+  ISS = list;
   const stat = id => { const is=ISS.filter(x=>x.pole===id); return { s: is.some(x=>x.sev==='bad')?'bad':is.some(x=>x.sev==='warn')?'warn':'ok', c:{bad:is.filter(x=>x.sev==='bad').length,warn:is.filter(x=>x.sev==='warn').length,info:is.filter(x=>x.sev==='info').length} }; };
   STN.forEach(s=>{ const r=stat(s.id); s._status=r.s; s._counts=r.c; });
   POLES.forEach(P=>{ const r=stat(PF2ST[P.id]||P.id); P._status=r.s; P._counts=r.c; });
@@ -1551,9 +1633,9 @@ function crossChecks(add){
         const cell = row[col]; if (!cell) return;
         if (row.key==='repl' && col==='pf') return;
         const src = COLN[col];
-        if (cell.s==='bad') add(id, col==='sk'?'warn':'bad', row.cat, `${row.label}: ${src} shows ${cell.t}${row.expect?`, expected ${row.expect}`:''}`, col==='sk'?'Read from the sketch image. Confirm on the Sketch review tab.':'', '', src);
+        const ocrSk = col==='sk' && !skCO()?.text; if (cell.s==='bad') add(id, ocrSk?'warn':'bad', row.cat, `${row.label}: ${src} shows ${cell.t}${row.expect?`, expected ${row.expect}`:''}`, ocrSk?'Read from the sketch image. Confirm on the Sketch review tab.':'', '', src);
         else if (cell.s==='warn') add(id, 'warn', row.cat, `${row.label}: ${src} ${cell.t}`, '', '', src);
-        else if (cell.s==='miss' && (row.req||{})[col]) add(id, col==='cu'?'bad':'warn', row.cat, col==='cu' ? `${row.label} is called out but has no CU in the station details` : `${row.label} isn't called out on the ${src}`, cell.t!=='not called out'?cell.t:(col==='sk'?'Read from the sketch image. Confirm on the Sketch review tab.':''), '', src);
+        else if (cell.s==='miss' && (row.req||{})[col]) add(id, col==='cu'?'bad':'warn', row.cat, col==='cu' ? `${row.label} is called out but has no CU in the station details` : `${row.label} isn't called out on the ${src}`, cell.t!=='not called out'?cell.t:(ocrSk?'Read from the sketch image. Confirm on the Sketch review tab.':''), '', src);
       });
       if (row.extra) add(id,'warn',row.cat,row.extra,'','', 'station details');
     });
@@ -1569,23 +1651,18 @@ function crossChecks(add){
       if (s.st.hours!=null && Math.abs(sum-s.st.hours)>0.02) add(id,'bad','Estimate',`Station labor hours ${f2(s.st.hours)} don't add up`,`CU hours total ${f2(sum)}.`,'','station details');
     } else if (ST && (s.wo||s.pf)) add(id,'bad','Station',`${id} isn't in the station details`,'','','station details');
     if (!s.wo && WO && (s.st||s.pf)) add(id,'warn','Scope',`${id} has no note in the WO log`,'','','WO notes');
-    if (s.st && s.stIfc){
-      const k = c => `${c.cu}|${c.wf}|${c.qty}`; const a=s.st.cus.map(k), b=s.stIfc.cus.map(k);
-      const onlyA=a.filter(x=>{ const i=b.indexOf(x); if(i>=0){ b.splice(i,1); return false; } return true; });
-      if (onlyA.length||b.length) add(id,'bad','Station','IFC copy of the station details differs from the standalone report', [onlyA.length?`Only in standalone: ${onlyA.map(x=>x.split('|').slice(0,2).join(' ')).join(', ')}`:'', b.length?`Only in IFC: ${b.map(x=>x.split('|').slice(0,2).join(' ')).join(', ')}`:''].filter(Boolean).join('. '),'','IFC summary');
-    }
     /* locations */
     const pfh = baseRule(s.pf?.R)?.head;
-    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['IFC summary',s.ifc?.lat,s.ifc?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
+    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),skCO()?.text?'bad':'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
     s._locs = locs;
     if (locs.length>1){ const [rn,rla,rlo]=locs[0]; locs.slice(1).forEach(([n,la,lo,sev])=>{ const dd=distFt(rla,rlo,la,lo); if (dd>S.coordFt) add(id, sev, 'Location', `${n[0].toUpperCase()+n.slice(1)} location is ${dd>5280?f1(dd/5280)+' miles':f0(dd)+' ft'} from the ${rn}`, `${rn}: ${rla}, ${rlo} · ${n}: ${la}, ${lo}`, '', n); }); }
-    const dl = [['WO notes',s.wo?.dloc,'bad'],['IFC summary',s.ifc?.dloc,'bad'],['sketch callout',s.sk?.dloc,'warn'],['photo label',s.ph?.ocr?.dloc,'warn'],['NJUNS asset',s.nj?.[0]?.a.pole,'bad']].filter(x=>x[1]);
+    const dl = [['WO notes',s.wo?.dloc,'bad'],['sketch callout',s.sk?.dloc,skCO()?.text?'bad':'warn'],['photo label',s.ph?.ocr?.dloc,'warn'],['NJUNS asset',s.nj?.[0]?.a.pole,'bad']].filter(x=>x[1]);
     s._dlocs = dl;
     if (dl.length>1) dl.slice(1).forEach(([n,v,sev])=>{ if (v!==dl[0][1]) add(id, sev, 'Location', `DLOC on the ${n} (${v}) doesn't match the ${dl[0][0]} (${dl[0][1]})`, '', '', n); });
     const nm = [...(s.names||[])]; if (s.sk?.id) nm.push(['sketch callout', s.sk.id]); if (s.ph?.ocr?.id && s.ph.ocr.src!=='text') nm.push(['photo label', s.ph.ocr.id]);
     nm.forEach(([src,raw])=>{ if (raw && raw!==s.id) add(id,'warn','Naming',`The ${src} calls this pole "${raw}" instead of "${s.id}"`,'Matched as the same pole. Use one naming convention across the package.','',src); });
     if (SK && !s.skLabel && (s.st||s.wo)) add(id,'warn','Sketch',`${id} label not found on the job sketch`,'','','job sketch');
-    if (SK?.ocr && !s.sk && (s.st||s.wo)) add(id,'info','Sketch',`No callout box found for ${id} on the sketch`,'Text reading looks for a box starting with the pole label and DLOC. Check the Sketch review tab.','','job sketch');
+    if (skCO() && !s.sk && (s.st||s.wo)) add(id,'info','Sketch',`No callout box found for ${id} on the sketch`,'Text reading looks for a box starting with the pole label and DLOC. Check the Sketch review tab.','','job sketch');
     if (PKG.photos && !s.ph && (s.st||s.wo)) add(id,'info','Photos',`No photo matched to ${id}`,'','','photos');
   });
 
@@ -1610,14 +1687,15 @@ function crossChecks(add){
     ['Title', wordNorm, [V('WO details',WO?.meta.title,PKG.wo),V('Sketch',SK?.K.fields.title,SK?.doc),V('Environmental',PKG.env?.data.meta.name,PKG.env)]],
     ['Address', addrNorm, [V('WO details',WO?.meta.address&&(WO.meta.address+(WO.meta.city?', '+WO.meta.city:'')),PKG.wo),V('Sketch',SK?.K.fields.address,SK?.doc),V('JHA',PKG.jha?.data.address,PKG.jha),V('Job jacket',J0?.address&&`${J0.address}, ${J0.city||''} ${J0.state||''}`,JK),V('Job jacket location',JO.location,JK),...(PKG.njuns||[]).map(d=>V('NJUNS',d.data.assets[0]?`${d.data.assets[0].house} ${d.data.assets[0].street}`:null,d))]],
     ['Substation', wordNorm, [V('Sketch',SK?.K.fields.sub,SK?.doc),V('IFC',PKG.ifc?.data.meta.substation,PKG.ifc),V('JHA',PKG.jha?.data.substation,PKG.jha)]],
-    ['Circuit / feeder', wordNorm, [V('Sketch',SK?.K.fields.circuit,SK?.doc),V('JHA',PKG.jha?.data.circuit,PKG.jha),...(PKG.dco||[]).flatMap(d=>d.data.forms.map((f,i)=>V(`DCO ${i+1}`,f.feeder,d,{page:f.page,find:f.feeder}))),V('Job jacket upstream device',JO.upstream&&/^\d+[A-Z]{2,4}$/i.test(JO.upstream)?JO.upstream:null,JK)]],
+    ['Circuit / feeder', wordNorm, [V('Sketch',SK?.K.fields.circuit,SK?.doc),V('Sketch feeder note',SK?.K.fields.feeder,SK?.doc),V('JHA',PKG.jha?.data.circuit,PKG.jha),...(PKG.dco||[]).flatMap(d=>d.data.forms.map((f,i)=>V(`DCO ${i+1}`,f.feeder,d,{page:f.page,find:f.feeder}))),V('Job jacket upstream device',JO.upstream&&/^\d+[A-Z]{2,4}$/i.test(JO.upstream)?JO.upstream:null,JK)]],
     ['ARC flash', v=>pfNum(v), [V('Sketch',SK?.K.fields.arc,SK?.doc),V('JHA',PKG.jha?.data.arc,PKG.jha)]],
-    ['Voltage', v=>pfNum(v), [V('IFC',PKG.ifc?.data.meta.voltage,PKG.ifc),V('Job jacket',JO.voltage,JK)]],
+    ['Voltage', v=>pfNum(v), [V('Sketch',SK?.K.fields.voltage,SK?.doc),V('Job jacket',JO.voltage,JK)]],
     ['Designer', null, [V('IFC',PKG.ifc?.data.meta.designer,PKG.ifc),V('Sketch',SK?.K.fields.designer,SK?.doc),V('Environmental',PKG.env?.data.meta.designer,PKG.env),V('Job jacket',J0?.designer,JK),V('Job jacket name',JO.designerName,JK),...(PKG.njuns||[]).map(d=>V('NJUNS',d.data.contact,d)),...(PKG.t811||[]).slice(-1).map(d=>V('811',d.data.contact,d))]],
     ['Pole count', v=>v, [V('WO details',WO?.meta.poleCount,PKG.wo),V('Station details',ST?.order.length,PKG.station||PKG.ifc),V('IFC design table',PKG.ifc?.data.order.length,PKG.ifc),V('PoleForeman',POLES.length||null,(PKG.pf||[])[0]),V('Sketch labels',SK?.K.labels.length,SK?.doc)]],
-    ['Target finish', isoDate, [V('WO details',WO?.meta.targetFinish,PKG.wo),V('Job cost commit',PKG.jobcost?.data.commit,PKG.jobcost),V('Job jacket',J0?.targetFinish,JK),...(PKG.njuns||[]).map(d=>V('NJUNS requested',d.data.requested,d))]],
+    ['Target finish', isoDate, [V('WO details',WO?.meta.targetFinish,PKG.wo),V('Job jacket',J0?.targetFinish,JK),...(PKG.njuns||[]).map(d=>V('NJUNS requested',d.data.requested,d))]],
+    ['Commit date', isoDate, [V('Job jacket',J0?.commit||JO.commit,JK),V('Job cost summary',PKG.jobcost?.data.commit,PKG.jobcost)]],
   ].map(([name, norm, vals])=>{
-    const v = vals.filter(x=>x[1]!=null && x[1]!=='' && !(x[2]&&x[2].foreign));
+    const v = vals.filter(x=>x[1]!=null && x[1]!=='' && !(x[2]&&x[2].foreign) && !/^IFC/.test(x[0]));
     let odd = [];
     if (name==='Designer'){ odd = v.filter(x=>!v.some(y=>y!==x && sameDesigner(x[1],y[1])) && v.length>1); }
     else { const ns=v.map(x=>String(norm(x[1]))); const cnt={}; ns.forEach(n=>cnt[n]=(cnt[n]||0)+1); const mode=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0]; odd = v.filter((x,i)=>ns[i]!==mode); }
@@ -1636,7 +1714,9 @@ function crossChecks(add){
   });
   if (JK){ if (JO.conjunction?.length) add(null,'info','Project',`Job jacket: works in conjunction with WO ${JO.conjunction.join(', ')}`,'Confirm coordination with those work orders.','', 'Job jacket', {doc:JK.id,page:1,find:'CONJUCTION'});
     const tl = WO?.meta.title || SK?.K.fields.title || PKG.env?.data.meta.name; if (JO.upstream && tl){ const tok=(JO.upstream.match(/\d{3,}|[0-9]+[A-Z]{2,4}/i)||[])[0]; if (tok && !tl.toUpperCase().includes(tok.toUpperCase())) add(null,'warn','Project',`Job jacket upstream device ${JO.upstream} isn't in the project title`, tl,'','Job jacket',{doc:JK.id,page:1}); }
-    const hrs = PKG.jobcost?.data.hours ?? PKG.jobcost?.data.onsite; if (JO.manHours && hrs && Math.abs(JO.manHours-hrs)>1) add(null,'info','Estimate',`Job jacket man hours (${f2(JO.manHours)}) differ from the estimate labor hours (${f2(hrs)})`,'','','Job jacket',{doc:JK.id,page:1});
+    const hOn = PKG.jobcost?.data.onsite ?? ST?.meta.onsite ?? PKG.labor?.data.hours, hTot = PKG.jobcost?.data.hours ?? ST?.meta.total;
+    if (JO.manHours!=null && (hOn!=null || hTot!=null) && ![hOn,hTot].some(h=>h!=null && Math.abs(h-JO.manHours)<=0.05)) add(null,'bad','Job jacket',`Job jacket ${JO.manHoursOnsite?'onsite ':''}man hours (${f2(JO.manHours)}) don't match the estimate`, [hOn!=null?`on-site ${f2(hOn)}`:'', hTot!=null?`total ${f2(hTot)}`:''].filter(Boolean).join(' · '),'','Job jacket',{doc:JK.id,page:1,find:'Man Hours'});
+    if (!JO.manHours && JK.data.ocr) add(null,'info','Job jacket','Man hours not read from the job jacket','Check them by eye.','','Job jacket',{doc:JK.id,page:1});
   }
   if (WO?.meta.startDloc && dlocs.size && !dlocs.has(WO.meta.startDloc)) add(null,'warn','Project',`WO start DLOC ${WO.meta.startDloc} isn't one of the poles`,'');
   if (WO?.meta.endDloc && dlocs.size && !dlocs.has(WO.meta.endDloc)) add(null,'warn','Project',`WO end DLOC ${WO.meta.endDloc} isn't one of the poles`,'');
@@ -1708,15 +1788,12 @@ function crossChecks(add){
   } else if (repl.some(s=>s.d.comms.length)) add(null,'warn','NJUNS','Replaced poles carry comm but no NJUNS ticket is loaded', repl.filter(s=>s.d.comms.length).map(s=>s.id).join(', '));
   /* environmental */
   if (PKG.env){ const E=PKG.env.data; E.q.forEach(q=>{ if (q.ans==='YES') add(null,'warn','Environmental',`Environmental checklist question ${q.n} is YES, so an environmental review is required`, q.text); else if (!q.ans) add(null,'warn','Environmental',`Environmental checklist question ${q.n} isn't answered`, q.text); }); }
-  /* spec sheets */
-  if (PKG.ifc){ const txt=PKG.ifc.data.specText||''; const used=[...new Set(STN.flatMap(s=>s.d.cus.filter(c=>c.wf==='I'&&(CU.primFrame(c)||/^SC\d/i.test(c.cu))).map(c=>CU.framePrefix(c.cu)||c.cu.replace(/A\d+.*$/,''))))];
-    used.forEach(u=>{ if (!new RegExp(`\\b${u}\\b`,'i').test(txt)) add(null,'info','IFC',`No construction spec text found for ${u}`, 'Spec pages that are images can\u2019t be read. Confirm the sheet is in the IFC package.'); }); }
   if (PKG.vicinity?.data.ocr){ const ids=PKG.vicinity.data.ocr.ids.map(nkey); const miss=STN.filter(s=>(s.st||s.wo)&&!ids.includes(s.key)).map(s=>s.id); if (miss.length) add(null,'info','Vicinity map',`Labels not read on the vicinity map: ${miss.join(', ')}`,'Only called-out poles may be labeled.'); }
   if (PKG.photos){ const n=PKG.photos.data.pages.length, m=STN.filter(s=>s.st||s.wo).length; if (m && n!==m) add(null,'info','Photos',`${n} photo pages for ${m} poles`,''); }
 
   /* DCO forms */
   const devDocs = (PKG.deviceid||[]).filter(d=>!d.foreign), devIds = new Set(devDocs.flatMap(d=>d.data.ids.map(x=>x.id)));
-  const area = [...STN.filter(x=>x.d.lat!=null).map(x=>[x.d.lat,x.d.lon]), ...[JK?.data.ocr?.callouts, PKG.vicinity?.data.ocr?.callouts, SK?.ocr?.callouts].flatMap(cs=>(cs||[]).map(c=>[pfNum(c.lat),pfNum(c.lon)])).filter(x=>x[0]!=null&&x[1]!=null)];
+  const area = [...STN.filter(x=>x.d.lat!=null).map(x=>[x.d.lat,x.d.lon]), ...[JK?.data.ocr?.callouts, PKG.vicinity?.data.ocr?.callouts, skCO()?.callouts].flatMap(cs=>(cs||[]).map(c=>[pfNum(c.lat),pfNum(c.lon)])).filter(x=>x[0]!=null&&x[1]!=null)];
   const knownDlocs = new Set([...STN.map(x=>x.d.dloc).filter(Boolean), ...[JK?.data.ocr?.callouts, PKG.vicinity?.data.ocr?.callouts].flatMap(cs=>(cs||[]).map(c=>c.dloc))]);
   const dcoEquip = new Set();
   (PKG.dco||[]).forEach(d=>d.data.forms.forEach((F,fi)=>{
@@ -1766,6 +1843,30 @@ function crossChecks(add){
       if (r.feet!==o.feet) add(null,'warn','Calcs',`Point ${r.point}: voltage drop sheet uses ${r.feet} ft, flicker sheet uses ${o.feet} ft`,'The two runs should model the same service.','','Flicker worksheet',{doc:fl.id,page:1,find:String(o.feet)});
       if (r.v!=='XFMR' && r.wire!==o.wire) add(null,'warn','Calcs',`Point ${r.point}: wire is ${r.wire} on the voltage drop sheet, ${o.wire} on the flicker sheet`,'','','Flicker worksheet',{doc:fl.id,page:1,find:o.wire}); });
   }
+
+  /* work order: scope statement, P&N and notes against the design */
+  if (WO){
+    const st = scopeText(), feats = {}; STN.forEach(s=>{ const f=designFeatures(s); Object.keys(f).forEach(k=>(feats[k]=feats[k]||[]).push(s.id)); });
+    const woLoc = { doc:PKG.wo.id, page:1, find:'scope' };
+    if (st) FEAT.forEach(F=>{ const said = F.re.test(st), has = !!feats[F.key];
+      if (said && !has && ['pole','straighten','hendrix','reconductor','recloser','capacitor','regulator','xfmr'].includes(F.key)) add(null,'warn','Scope',`Scope says "${(st.match(F.re)||[''])[0]}" but no pole in the design has it`, `No ${F.label.toLowerCase()} CUs in the station details.`,'','WO details',woLoc);
+      if (!said && has && F.big) add(null,'info','Scope',`Design includes ${F.label.toLowerCase()} (${feats[F.key].join(', ')}) that the scope statement doesn't mention`,'Confirm this is within scope.','','WO details',woLoc); });
+    if (!WO.meta.scope) add(null,'warn','WO','No scope statement found at the top of the Work Order Details','','','WO details',woLoc);
+    if (!WO.meta.pn) add(null,'warn','WO','No Purpose & Necessity entry in the WO log','','','WO details',woLoc);
+    const woText = [WO.meta.scope, WO.meta.pn, ...WO.log.filter(e=>e.kind!=='notification').map(e=>e.desc+' '+e.text)].join(' ');
+    const latest = (PKG.t811||[]).map(d=>d.data).sort((a,b)=>String(a.dateObj).localeCompare(String(b.dateObj))).pop();
+    if (latest && latest.ticket && !woText.includes(latest.ticket)) add(null,'warn','WO',`Work order notes don't list the 811 ticket (${latest.ticket})`,'Add permit and locate information to the Work Order Notes.','','WO details',woLoc);
+    (PKG.njuns||[]).forEach(d=>{ const n=(d.data.number||String(d.data.ticket||'').replace(/^PR/i,'')); if (n && !woText.includes(n)) add(null,'warn','WO',`Work order notes don't list NJUNS ticket ${d.data.ticket||n}`,'','','WO details',woLoc); });
+    (JK?.data.ocr?.conjunction||[]).forEach(w=>{ if (!woText.includes(w)) add(null,'warn','WO',`Related WO ${w} (from the job jacket) isn't listed in the work order notes`,'List related / split WO numbers in the Long Description and Work Order Notes.','','WO details',woLoc); });
+  }
+
+  /* underground CUs on an overhead job */
+  if (CUDB && CUDB.n){ const all = STN.flatMap(s=>(s.st?.cus||[]).map(c=>({s,c,wt:cuRec(c)?.wt||''})));
+    const ug = x => ['EQUG','WPUG','TRCU'].includes(x.wt); const oh = JK?.data.ohug==='OH' || (all.length && all.filter(ug).length/all.length < 0.1);
+    if (oh) all.filter(ug).forEach(x=>add(x.s.id,'warn','CU',`${x.c.cu} is an underground CU (${x.wt}) on an overhead job`, cuRec(x.c)?.d||'', '', 'station details', (PKG.station||PKG.ifc)?{doc:(PKG.station||PKG.ifc).id,page:x.c.page||x.s.st.pages[0],find:x.c.cu}:null)); }
+
+  /* photos: every pole should have one when labels can be read */
+  if (PKG.photos && PKG.photos.data.pages.some(p=>p.ocr && p.ocr.id)) STN.forEach(s=>{ if ((s.st||s.wo) && !s.ph) add(s.id,'warn','Photos',`No photo found for ${s.id}`,'','','photos',{doc:PKG.photos.id,page:1}); });
 }
 
 /* ---------- PoleForeman checks ---------- */
@@ -2242,7 +2343,7 @@ async function saveTemplate(file){
 async function resetTemplate(){ await dbDel('__scoretpl'); SCLISTS = null; await scLists(); toast('Using the built-in scorecard template'); if (TAB==='settings') render(); }
 
 /* CU-level suggestions for the Maximo Upload sheet */
-function sysLN(){ const v = PKG.ifc?.data.meta.voltage || JK?.data.ocr?.voltage; const kv = pfNum(v); return kv ? { kv, ln: kv*1000/Math.sqrt(3) } : null; }
+function sysLN(){ const v = SK?.K.fields.voltage || JK?.data.ocr?.voltage || PKG.ifc?.data.meta.voltage; const kv = pfNum(v); return kv ? { kv, ln: kv*1000/Math.sqrt(3) } : null; }
 function cuFixes(s){
   const out = {}; const cus = s.st?.cus || []; if (!cus.length) return out;
   const put = (i, cls, fix) => { if (!out[i]) out[i] = { cls, fix }; else if (out[i].cls!==cls) { out[i].cls = 'Multiple Issues'; out[i].fix += ' ' + fix; } };
@@ -2464,7 +2565,7 @@ const skItems = s => scopeOf(s).filter(r=>r.sk && r.sk.s!=='' && !['setting','fr
 function skProgress(){ let n=0, c=0; STN.forEach(s=>skItems(s).forEach(r=>{ n++; if (SKCHK[skKey(s,r.key)] || r.sk.s==='ok') c++; })); return {n,c}; }
 const scopeBadges = s => { const d=s.d, b=[]; if (d.poleInst) b.push(`<span class="pill info">Replace ${d.instHC?`${d.instHC.h}-${d.instHC.c}`:''}</span>`); if (d.has250C) b.push('<span class="pill c">250C</span>'); if (d.agI.length) b.push('<span class="pill none">New guy</span>'); if (d.cus.some(CU.xfmr)) b.push('<span class="pill none">Transformer</span>'); if (d.cus.some(CU.straighten)) b.push('<span class="pill none">Straighten</span>'); if (d.cus.some(c=>c.wf==='I'&&CU.gsi(c))) b.push('<span class="pill none">GSI</span>'); if (d.cus.some(CU.hendrix)) b.push('<span class="pill none">Hendrix</span>'); return b.join(' '); };
 
-function renderHeaderTools(){ const sel=$('#origSel'); sel.hidden=!DOCS.length; sel.innerHTML='<option value="">Original PDFs…</option>'+DOCS.slice().sort((a,b)=>natural(a.name,b.name)).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join(''); $('#xlsxBtn').hidden=!DOCS.length; $('#scBtn').hidden=!DOCS.length; }
+function renderHeaderTools(){ const sel=$('#origSel'); sel.hidden=!DOCS.length; sel.innerHTML='<option value="">Original PDFs…</option>'+DOCS.filter(d=>d.bytes).sort((a,b)=>natural(a.name,b.name)).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join(''); $('#xlsxBtn').hidden=!DOCS.length; $('#scBtn').hidden=!DOCS.length; }
 $('#scBtn').addEventListener('click', ()=>exportScorecard());
 $('#tplFile').addEventListener('change', async e=>{ const f=e.target.files[0]; e.target.value=''; if (f) await saveTemplate(f); });
 scLists().then(()=>{ if (TAB==='settings') render(); });
@@ -2484,20 +2585,20 @@ function renderKpis(){ renderHeaderTools();
     [c('warn'),'Review','warnings',c('warn')?'warn':''],
     [ISS.filter(i=>i.pole==='Project'&&i.sev!=='info').length,'Package findings','across documents',''],
     [tot!=null?money(tot):'–','Estimate total',PKG.jobcost?'job cost summary':'',''],
-    [sp.n?`${sp.c} / ${sp.n}`:'–','Sketch items confirmed',SK?(SK.ocr?'auto-read + by eye':'confirm by eye'):'no sketch',sp.n&&sp.c===sp.n?'ok':''],
+    [sp.n?`${sp.c} / ${sp.n}`:'–','Sketch items confirmed',SK?(skCO()?'auto-read + by eye':'confirm by eye'):'no sketch',sp.n&&sp.c===sp.n?'ok':''],
   ];
   $('#kpis').innerHTML=k.map((x,i)=>`<div class="kpi">${(i===2||i===3)&&x[0]?`<button class="kpib" data-gotoreview="1" title="Show poles that need review">`:''}<div class="v ${x[3]}">${x[0]}</div><div class="l">${x[1]}</div><div class="d">${esc(x[2])}</div>${(i===2||i===3)&&x[0]?'</button>':''}</div>`).join('');
   const nr = STN.filter(s=>s._status!=='ok').length;
   $('#reviewBtn').hidden = false; $('#reviewBtn').textContent = nr ? `Review ${nr} pole${nr>1?'s':''}` : 'No poles need review'; $('#reviewBtn').disabled = !nr;
 }
-const TABS=[['overview','Overview'],['poles','Poles'],['sketch','Sketch review'],['estimate','Estimate'],['permits','Permits'],['devices','DCO & calcs'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
+const TABS=[['overview','Overview'],['poles','Poles'],['sketch','Sketch review'],['estimate','Estimate'],['wo','Work order'],['scopetab','Scope review'],['permits','Permits'],['devices','DCO & calcs'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
 function render(){
   const sp = skProgress();
   const cnt={poles:STN.length, issues:ISS.filter(i=>i.sev!=='info').length, docs:DOCS.length, sketch: sp.n?`${sp.c}/${sp.n}`:null, guying:POLES.reduce((a,p)=>{ const r=baseRule(p.R); return a+r.anchors.length+(r.spanGuys||[]).length; },0)};
   $('#tabs').innerHTML=TABS.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${TAB===k}">${l}${cnt[k]!=null?`<span class="n">${cnt[k]}</span>`:''}</button>`).join('');
   const v=$('#view');
   const pfNeed = ['compare','spans','guying','equipment'].includes(TAB) && !POLES.length;
-  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, sketch:renderSketch, estimate:renderEstimate, permits:renderPermits, devices:renderDevices, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
+  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, sketch:renderSketch, estimate:renderEstimate, wo:renderWO, scopetab:renderScope, permits:renderPermits, devices:renderDevices, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
   if (TAB==='sketch') wireSketch();
 }
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('[data-tab]'); if(b){ TAB=b.dataset.tab; render(); } });
@@ -2505,7 +2606,7 @@ const cellHtml = c => { if (!c) return '<td class="sc"></td>'; const ic = {ok:'�
 
 /* overview */
 function renderOverview(){
-  const kinds = Object.entries(KINDS).filter(([k])=>k!=='unknown');
+  const kinds = Object.entries(KINDS).filter(([k])=>!['unknown','ifc','inspection','scopeimg'].includes(k) || DOCS.some(d=>d.kind===k));
   const pk = kinds.map(([k,v])=>{ const ds = DOCS.filter(d=>d.kind===k || (k==='sketch' && d.kind==='ifc' && d.data.sketchPage && !PKG.sketch) || (k==='station' && d.kind==='ifc' && d.data.station && !PKG.station));
     const via = ds.length && ds[0].kind!==k ? ' (from IFC)' : '';
     const sum = ds.map(d=>docSummary(d, k)).filter(Boolean).join(' · ');
@@ -2551,6 +2652,8 @@ function docSummary(d, as){
     case 'dco': return `${x.forms.length} form${x.forms.length===1?'':'s'}: ${x.forms.map(f=>`${f.rows.map(r=>`${r.action} ${r.type} ${r.equip}`).join(', ')} at ${f.dloc||'?'}`).join('; ')}`;
     case 'vd': return `${x.kind==='flicker'?'Flicker':'Voltage drop'}: ${x.xfmr||'?'} kVA transformer, ${x.rows.length} points, ${x.maxCum}% at the end`;
     case 'jacket': return `WO ${x.wo}, ${x.subType||''}, designer ${x.designer||'?'}${x.ocr?`, ${x.ocr.manHours||'?'} man hours, upstream ${x.ocr.upstream||'?'}`:', text not read yet'}`;
+    case 'inspection': return `${x.pages.length} page${x.pages.length===1?'':'s'}`;
+    case 'scopeimg': return 'image';
     case 'deviceid': return `${x.ids.map(i=>i.id).join(', ')} for WO ${x.wo}`;
   }
   return '';
@@ -2588,7 +2691,7 @@ function poleView(s){
     const grp = c => c.wf==='I'?0:c.wf==='R'?1:c.wf==='T'?2:3;
     h += `<div class="sec"><h3>Station details <span class="muted sm">${f2(s.st.hours)} labor hours${s.st.inacc?` · inaccessible: ${esc(s.st.inacc)}`:''}</span></h3><div class="tscroll"><table><thead><tr><th>CU</th><th>Work</th><th>Description</th><th class="num">Qty</th><th>H/C</th><th class="num">Hours</th></tr></thead><tbody>${s.st.cus.slice().sort((a,b)=>grp(a)-grp(b)).map(c=>`<tr><td><b style="font-weight:600">${esc(c.cu)}</b></td><td><span class="pill ${c.wf==='I'?'info':c.wf==='R'?'bad':'none'}">${esc(WFN[c.wf]||c.wf)}</span></td><td style="white-space:normal">${esc(c.desc)}</td><td class="num">${f0(c.qty)}</td><td>${esc(c.hc)}</td><td class="num">${f2(c.hours)}</td></tr>`).join('')}<tr><th colspan="5">Total</th><td class="num"><b class="${Math.abs(sum-(s.st.hours||0))>0.02?'pct bad':''}">${f2(sum)}</b></td></tr></tbody></table></div></div>`;
   }
-  if (s.wo || s.ifc || s.sk) h += `<div class="sec"><h3>Written scope</h3><div class="grid3">${s.wo?`<div class="note"><b>WO notes</b>${s.wo.notes.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}${s.ifc?`<div class="note"><b>IFC design summary</b><p>${esc(s.ifc.comments)}</p>${s.ifc.poleMacro?`<p class="muted">Pole ${esc(s.ifc.poleMacro)}, set ${esc(s.ifc.setting)}' · framing ${esc(s.ifc.framing||'–')}</p>`:''}${s.ifc.equipment?`<p class="muted">Equipment: ${esc(s.ifc.equipment)}</p>`:''}${s.ifc.anchor?`<p class="muted">Anchor: ${esc(s.ifc.anchor)}</p>`:''}</div>`:''}${s.sk?`<div class="note"><b>Sketch callout (read from image)</b>${s.sk.lines.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}</div></div>`;
+  if (s.wo || s.sk) h += `<div class="sec"><h3>Written scope</h3><div class="grid3">${s.wo?`<div class="note"><b>WO notes</b>${s.wo.notes.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}${s.sk?`<div class="note"><b>Sketch callout (read from image)</b>${s.sk.lines.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}</div></div>`;
   if (s.pf) h += `<div class="sec"><h3 style="font-size:22px;margin-top:10px">PoleForeman ${esc(s.pf.id)} <span class="muted sm">${esc(s.pf.R.poleSpec)} · ${s.pf.R.ruleOrder.join(' + ')}${s.pf._hag?` · ${f1(s.pf._hag)} ft above ground`:''}</span></h3></div>` + pfBody(s.pf);
   return h;
 }
@@ -2600,14 +2703,14 @@ function renderSketch(){
   const s = STN.find(x=>x.id===SKCUR) || STN[0];
   const chips = STN.filter(x=>x.skLabel||x.st||x.wo).map(x=>{ const it=skItems(x); const done=it.filter(r=>SKCHK[skKey(x,r.key)]||r.sk.s==='ok').length; const bad=it.some(r=>r.sk.s==='bad');
     return `<button class="chipb ${x.id===s?.id?'on':''}" data-sk="${esc(x.id)}"><span class="dot ${bad?'bad':done===it.length?'ok':'warn'}"></span>${esc(x.id)} <span class="muted">${done}/${it.length}</span></button>`; }).join('');
-  const ocrBtn = SK.ocr ? `<span class="muted sm">${SK.ocr.callouts.length} callouts read from the drawing</span>` : `<button class="btn sm primary" data-ocr="1">Read sketch text</button>`;
+  const ocrBtn = skCO() ? `<span class="muted sm">${skCO().callouts.length} callouts ${skCO().text?'read from the sketch PDF':'read from the drawing'}</span>` : `<button class="btn sm primary" data-ocr="1">Read sketch text</button>`;
   return `<div class="viewbar"><h2>Sketch vs station details</h2>${ocrBtn}<div class="hint">Pick a pole to zoom to it. Each CU-driven item is checked against the callout text; tick Seen once you've seen it on the drawing. Drag to pan, scroll to zoom.</div></div>
   <div class="skwrap"><div class="skview"><div class="sktools"><button class="btn sm" data-skz="out" aria-label="Zoom out">−</button><button class="btn sm" data-skz="fit">Fit</button><button class="btn sm" data-skz="in" aria-label="Zoom in">+</button><button class="btn sm" data-skz="pole">Zoom to ${esc(s?.id||'')}</button><span class="spacer"></span><button class="btn sm" data-pages="${SK.doc.id}|${SK.K.page}">Open page</button></div>
     <div class="skvp" id="skvp"><div class="skin" id="skin"><img src="${SK.img.src}" width="${SK.img.w}" height="${SK.img.h}" alt="Job sketch" draggable="false">${skOverlay(s)}</div></div></div>
   <div class="skside"><div class="chips" style="margin-bottom:10px">${chips}</div>${s?skPanel(s):''}</div></div>`;
 }
 function skOverlay(cur){
-  const W=SK.img.w, H=SK.img.h, k=SK.img.scale, ok = SK.ocr ? SK.img.scale/SK.ocr.scale : 0;
+  const W=SK.img.w, H=SK.img.h, k=SK.img.scale, ok = skCO() ? SK.img.scale/skCO().scale : 0;
   let g='';
   STN.forEach(s=>{ const on = s===cur;
     if (s.sk && ok){ const b=s.sk.box; g += `<rect x="${b.x0*ok-8}" y="${b.y0*ok-8}" width="${(b.x1-b.x0)*ok+16}" height="${(b.y1-b.y0)*ok+16}" rx="6" class="skbox ${on?'on':''}"/>`; }
@@ -2617,7 +2720,7 @@ function skOverlay(cur){
 }
 function skPanel(s){
   const idr = [['DLOC', s.wo?.dloc||s.ifc?.dloc, s.sk?.dloc], ['Latitude', s.wo?.latText||s.ifc?.latText, s.sk?.lat], ['Longitude', s.wo?.lonText||s.ifc?.lonText, s.sk?.lon]];
-  const idHtml = idr.map(([n,a,b])=>{ const m = a&&b ? (n==='DLOC' ? a===b : Math.abs(pfNum(a)-pfNum(b))<0.00002) : null; return `<tr><td>${n}</td><td>${esc(a||'–')}</td><td class="${m===false?'pct bad':''}">${esc(b|| (SK.ocr?'not read':'–'))}</td><td>${m==null?'':m?'<span class="pill ok">Match</span>':'<span class="pill bad">Differs</span>'}</td></tr>`; }).join('');
+  const idHtml = idr.map(([n,a,b])=>{ const m = a&&b ? (n==='DLOC' ? a===b : Math.abs(pfNum(a)-pfNum(b))<0.00002) : null; return `<tr><td>${n}</td><td>${esc(a||'–')}</td><td class="${m===false?'pct bad':''}">${esc(b|| (skCO()?'not read':'–'))}</td><td>${m==null?'':m?'<span class="pill ok">Match</span>':'<span class="pill bad">Differs</span>'}</td></tr>`; }).join('');
   const items = skItems(s);
   const rows = items.map(r=>{ const k=skKey(s,r.key), on=!!SKCHK[k]; return `<tr><th style="white-space:normal">${esc(r.label)}</th>${cellHtml(r.cu)}${cellHtml(r.sk)}<td><label class="ck"><input type="checkbox" data-skchk="${esc(k)}" ${on?'checked':''}> Seen</label></td></tr>`; }).join('');
   return `<h3 style="font-size:22px;margin-bottom:6px">${esc(s.id)} ${statusPill(s._status)}</h3>
@@ -2625,12 +2728,12 @@ function skPanel(s){
   <div class="tscroll"><table class="trace"><thead><tr><th>Should be on the sketch</th><th>Station details</th><th>Sketch text</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">No sketch items for this pole.</td></tr>'}</tbody></table></div>
   ${s.st?`<div class="sec" style="margin-top:14px"><h3 style="font-size:17px">Station details <span class="muted sm">${f2(s.st.hours)} hrs${s.st.inacc?` · ${esc(s.st.inacc)} inaccessible`:''}</span> <button class="btn sm" data-pages="${(PKG.station||PKG.ifc).id}|${s.st.pages.join(',')}">Open page</button></h3><div class="tscroll"><table class="cutbl"><thead><tr><th>CU</th><th>Work</th><th>Description</th><th class="num">Qty</th></tr></thead><tbody>${s.st.cus.slice().sort((a,b)=>'IRTX'.indexOf(a.wf)-'IRTX'.indexOf(b.wf)).map(c=>{ const oh=/^(TAILBOARD|VEGM|TRUCK|TRAFFIC|ENGR|SETUP|C6$|CS|CST|CSD|CSA)/i.test(c.cu); return `<tr class="${oh?'dim':''}"><td><b style="font-weight:600">${esc(c.cu)}</b></td><td><span class="pill ${c.wf==='I'?'info':c.wf==='R'?'bad':'none'}">${esc(WFN[c.wf]||c.wf)}</span></td><td style="white-space:normal">${esc(c.desc)}</td><td class="num">${f0(c.qty)}</td></tr>`; }).join('')}</tbody></table></div></div>`:''}
   ${s.wo?`<div class="note" style="margin-top:12px"><b>WO notes</b>${s.wo.notes.map(n=>`<p>${esc(n)}</p>`).join('')}</div>`:''}
-  <div class="note" style="margin-top:12px"><b>Callout text</b>${s.sk?s.sk.lines.map(l=>`<p>${esc(l)}</p>`).join(''):`<p class="muted">${SK.ocr?'No callout box starting with this pole label and a DLOC line was found. Review it by eye.':'Use “Read sketch text” to pull the callouts off the drawing and check them automatically.'}</p>`}</div>`;
+  <div class="note" style="margin-top:12px"><b>Callout text</b>${s.sk?s.sk.lines.map(l=>`<p>${esc(l)}</p>`).join(''):`<p class="muted">${skCO()?'No callout box starting with this pole label and a DLOC line was found. Review it by eye.':'Use “Read sketch text” to pull the callouts off the drawing and check them automatically.'}</p>`}</div>`;
 }
 function skApply(){ const el=$('#skin'); if (el && SKZ) el.style.transform=`translate(${SKZ.x}px,${SKZ.y}px) scale(${SKZ.s})`; }
 function skFit(){ const vp=$('#skvp'); if(!vp) return; const s=vp.clientWidth/SK.img.w; SKZ={s, x:0, y:(vp.clientHeight-SK.img.h*s)/2}; skApply(); }
 function skFocus(s){ const vp=$('#skvp'); if(!vp||!s) return; let x, y;
-  if (s.sk && SK.ocr){ const k=SK.img.scale/SK.ocr.scale, b=s.sk.box; const pts=[[b.x0*k,b.y0*k],[b.x1*k,b.y1*k]]; if (s.skLabel) pts.push([s.skLabel.x*SK.img.scale, s.skLabel.y*SK.img.scale]); const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]); x=(Math.min(...xs)+Math.max(...xs))/2; y=(Math.min(...ys)+Math.max(...ys))/2; const span=Math.max(Math.max(...xs)-Math.min(...xs)+700, (Math.max(...ys)-Math.min(...ys)+500)*vp.clientWidth/vp.clientHeight); SKZ={s:Math.min(1.2, vp.clientWidth/span), x:0, y:0}; }
+  if (s.sk && skCO()){ const k=SK.img.scale/skCO().scale, b=s.sk.box; const pts=[[b.x0*k,b.y0*k],[b.x1*k,b.y1*k]]; if (s.skLabel) pts.push([s.skLabel.x*SK.img.scale, s.skLabel.y*SK.img.scale]); const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]); x=(Math.min(...xs)+Math.max(...xs))/2; y=(Math.min(...ys)+Math.max(...ys))/2; const span=Math.max(Math.max(...xs)-Math.min(...xs)+700, (Math.max(...ys)-Math.min(...ys)+500)*vp.clientWidth/vp.clientHeight); SKZ={s:Math.min(1.2, vp.clientWidth/span), x:0, y:0}; }
   else if (s.skLabel){ x=s.skLabel.x*SK.img.scale; y=s.skLabel.y*SK.img.scale; SKZ={s:Math.min(1, vp.clientWidth/900), x:0,y:0}; }
   else { skFit(); return; }
   SKZ.x = vp.clientWidth/2 - x*SKZ.s; SKZ.y = vp.clientHeight/2 - y*SKZ.s; skApply(); }
@@ -2678,9 +2781,56 @@ function renderPermits(){
   return h;
 }
 
+
+/* ---------- work order details ---------- */
+function renderWO(){
+  if (!WO) return `<p class="muted">Add the Work Order Details PDF to review the scope statement, Purpose &amp; Necessity, work description and notes.</p>`;
+  const m = WO.meta, iss = ISS.filter(i=>['WO','Scope'].includes(i.cat) || /WO notes|WO details/i.test(i.src) || (i.loc && i.loc.doc===PKG.wo.id)).filter(i=>i.sev!=='info' || i.cat==='Scope');
+  const nSt = STN.filter(s=>s.st||s.wo).length, first = STN.find(s=>s.st)?.d.dloc, last = [...STN].reverse().find(s=>s.st)?.d.dloc;
+  const chk = (a,b) => a==null||b==null ? '' : String(a)===String(b) ? '<span class="pill ok">Match</span>' : '<span class="pill bad">Differs</span>';
+  const st = scopeText(); const feats = {}; STN.forEach(s=>{ const f=designFeatures(s); Object.keys(f).forEach(k=>(feats[k]=feats[k]||[]).push(s.id)); });
+  const chips = FEAT.filter(F=>F.re.test(st) || feats[F.key]).map(F=>{ const said=F.re.test(st), has=!!feats[F.key]; return `<span class="kv ${said&&!has?'bad':''}"><b style="font-weight:600">${esc(F.label)}</b> <span class="muted">${said?'in scope':'not in scope text'} · ${has?'design: '+feats[F.key].join(', '):'not in design'}</span></span>`; }).join('');
+  const pnCost = m.pnCostText; const est = PKG.jobcost?.data.total ?? PKG.costdist?.data.total;
+  const pnFacts = [['Total cost stated', pnCost?('$'+pnCost):null, est!=null?money(est):null], ['Outages stated', (String(m.pn||'').match(/(\d+)\s*outages?/i)||[])[1], null], ['Two-year CI stated', (String(m.pn||'').match(/CI[^.]*?is\s*(\d[\d,]*)/i)||[])[1], null], ['$/ACI stated', (String(m.pn||'').match(/\$\/ACI of \$?([\d.,]+)/i)||[])[1], null]];
+  const notes = WO.log.filter(e=>e.kind==='note'), notif = WO.log.filter(e=>e.kind==='notification');
+  const wdRows = STN.filter(s=>s.st||s.wo).map(s=>{ const rows=scopeOf(s).filter(r=>r.wo && r.wo.s!==''); const bad=rows.filter(r=>['miss','bad'].includes(r.wo.s)&&((r.req||{}).wo||r.wo.s==='bad'));
+    return `<tr><td><button class="link" data-pole="${esc(s.id)}">${esc(s.id)}</button></td><td style="white-space:normal;min-width:320px">${s.wo?s.wo.notes.map(n=>esc(n)).join('<br>'):'<span class="pct bad">No work description for this pole</span>'}</td><td style="white-space:normal">${bad.length?bad.map(r=>`<span class="pct ${r.wo.s==='bad'?'bad':'warn'}">${esc(r.label)}: ${esc(r.wo.t)}</span>`).join('<br>'):'<span class="pill ok">Matches station details</span>'}</td></tr>`; }).join('');
+  return `<div class="viewbar"><h2>Work order details</h2><button class="btn sm" data-pages="${PKG.wo.id}|all">Open pages</button><div class="hint">Scope statement, Purpose &amp; Necessity, work description and notes compared with the design.</div></div>
+  ${iss.length?`<div class="issues" style="margin-bottom:14px">${iss.map(issHtml).join('')}</div>`:'<p class="muted">No work order findings.</p>'}
+  <div class="grid2"><div class="sec"><h3>Header</h3><div class="tscroll"><table><tbody>
+   <tr><th>Work order</th><td>${esc(m.wo)}</td><td></td></tr><tr><th>Title</th><td style="white-space:normal">${esc(m.title)}</td><td></td></tr>
+   <tr><th>Pole count</th><td>${esc(m.poleCount??'–')} <span class="muted">· design has ${nSt}</span></td><td>${chk(m.poleCount,nSt)}</td></tr>
+   <tr><th>Start DLOC</th><td>${esc(m.startDloc||'–')} <span class="muted">· first pole ${esc(first||'?')}</span></td><td>${chk(m.startDloc,first)}</td></tr>
+   <tr><th>End DLOC</th><td>${esc(m.endDloc||'–')} <span class="muted">· last pole ${esc(last||'?')}</span></td><td>${chk(m.endDloc,last)}</td></tr>
+   <tr><th>Target start / finish</th><td>${esc(m.targetStart||'–')} / ${esc(m.targetFinish||'–')}</td><td></td></tr>
+   <tr><th>Status · work type</th><td>${esc(m.status||'')} · ${esc(m.workType||'')} ${esc(m.subType||'')}</td><td></td></tr>
+   <tr><th>GL account</th><td style="white-space:normal">${esc(m.gl||'–')}</td><td></td></tr></tbody></table></div></div>
+  <div class="sec"><h3>Scope statement</h3><div class="note"><p>${esc(m.scope||'Not found.')}</p></div><div style="margin-top:8px">${chips||'<span class="muted">No scope items recognized.</span>'}</div></div></div>
+  <div class="sec"><h3>Purpose &amp; Necessity</h3><div class="note"><p>${esc(m.pn||'Not found.')}</p></div><div class="tscroll" style="margin-top:8px"><table><tbody>${pnFacts.filter(f=>f[1]).map(f=>`<tr><th>${f[0]}</th><td>${esc(f[1])}</td><td>${f[2]?`<span class="muted">estimate ${esc(f[2])}</span>`:''}</td></tr>`).join('')}</tbody></table></div></div>
+  <div class="sec"><h3>Work description by pole</h3><div class="tscroll"><table><thead><tr><th>Pole</th><th>Work description</th><th>Against station details</th></tr></thead><tbody>${wdRows}</tbody></table></div></div>
+  <div class="sec"><h3>Work order notes</h3>${notes.length?notes.map(e=>`<div class="note" style="margin-bottom:8px"><b>${esc(e.date)} · ${esc(e.by)} · ${esc(e.desc)}</b><p style="white-space:pre-wrap">${esc(e.text)}</p></div>`).join(''):'<p class="muted">No work order notes besides the work description and P&amp;N.</p>'}<p class="muted sm">${notif.length} automatic Maximo notifications hidden.</p></div>`;
+}
+
+/* ---------- scope review ---------- */
+let SCOPECHK = {}; try { SCOPECHK = JSON.parse(localStorage.getItem('pfqc:scope')||'{}'); } catch(e){}
+function renderScope(){
+  const st = scopeText(); const insp = DOCS.filter(d=>d.kind==='inspection'), imgs = DOCS.filter(d=>d.kind==='scopeimg');
+  const inspFor = s => insp.flatMap(d=>d.data.pages.filter(p=>{ const t=p.text||''; return (s.d.dloc && t.includes(s.d.dloc)) || new RegExp(`\\b${s.id}\\b|\\bP0*${(s.id.match(/\d+/)||[''])[0]}\\b`).test(t); }).map(p=>({d,p})));
+  const rows = STN.filter(s=>s.st).map(s=>{ const f=designFeatures(s); const keys=Object.keys(f); const ins=inspFor(s);
+    const items = keys.map(k=>{ const F=FEAT.find(x=>x.key===k); const inScope=F.re.test(st), inWD = s.wo && F.re.test(s.wo.notes.join(' ')), inInsp = ins.some(x=>F.re.test(x.p.text||'')); const ck=`${woKey()}|${s.id}|${k}`;
+      return `<tr><th style="white-space:normal">${esc(F.label)}<br><span class="muted sm">${esc(f[k].map(c=>`${WFN[c.wf]||c.wf} ${c.cu}`).join(', '))}</span></th>${cellHtml(st?(inScope?C.ok('mentioned'):C.miss('not mentioned')):C.none('no scope text'))}${cellHtml(s.wo?(inWD?C.ok('mentioned'):C.miss('not mentioned')):C.none('no note'))}${cellHtml(insp.length?(ins.length?(inInsp?C.ok('mentioned'):C.miss('not mentioned')):C.none('pole not found')):C.none('no inspection'))}<td><select data-scope="${esc(ck)}"><option value="">–</option><option ${SCOPECHK[ck]==='In scope'?'selected':''}>In scope</option><option ${SCOPECHK[ck]==='Out of scope'?'selected':''}>Out of scope</option><option ${SCOPECHK[ck]==='Needed for design'?'selected':''}>Needed for design</option></select></td></tr>`; }).join('');
+    return `<div class="sec"><h3>${esc(s.id)} <span class="muted sm">${esc(s.d.dloc||'')}</span> ${ins.length?ins.map(x=>`<button class="btn sm" data-pages="${x.d.id}|${x.p.page}">Inspection p. ${x.p.page}</button>`).join(' '):''}</h3>${items?`<div class="tscroll"><table class="trace"><thead><tr><th>Design action</th><th>Scope statement / P&amp;N</th><th>Work description</th><th>Inspection sheet</th><th>Your call</th></tr></thead><tbody>${items}</tbody></table></div>`:'<p class="muted">Only support CUs at this pole (tailboard, traffic control, conductor handling).</p>'}</div>`; }).join('');
+  return `<div class="viewbar"><h2>Scope review</h2><div class="hint">Every design action from the station details, checked against the original scope: the WO scope statement and P&amp;N, the pole's work description, and any inspection sheets or scope images you add. Mark each one in scope, out of scope, or needed for the design; your answers are saved in this browser.</div></div>
+  ${ISS.filter(i=>i.cat==='Scope').map(issHtml).join('')}
+  <div class="note" style="margin:10px 0"><b>Original scope</b><p>${esc(st||'No scope statement or P&N loaded.')}</p></div>
+  ${imgs.length?`<div class="sec"><h3>Scope images</h3><div class="imgs3">${imgs.map(d=>`<figure class="light"><img src="${d.data.img}" alt="${esc(d.name)}"><figcaption>${esc(d.name)}</figcaption></figure>`).join('')}</div></div>`:''}
+  ${!insp.length&&!imgs.length?'<p class="muted sm">Drop inspection sheets (PDF) or scope images (PNG/JPG) onto the page to compare against them here.</p>':''}
+  ${rows||'<p class="muted">Add the station details to review the design scope.</p>'}`;
+}
+
 /* documents */
 function renderDocs(){
-  const rows = DOCS.slice().sort((a,b)=>natural(KINDS[a.kind].n,KINDS[b.kind].n)).map(d=>`<tr><td><span class="dot ${d.kind==='unknown'||d.foreign?'bad':'ok'}"></span> ${esc(KINDS[d.kind].n)}${d.foreign?' <span class="pill bad">other WO</span>':''}</td><td>${esc(d.name)}</td><td class="num">${d.pages}</td><td class="muted" style="white-space:normal">${esc(docSummary(d))}</td><td style="white-space:nowrap"><button class="btn sm primary" data-orig="${d.id}">Open PDF</button> <button class="btn sm" data-pages="${d.id}|all">View here</button> <button class="btn sm" data-rmdoc="${d.id}">Remove</button></td></tr>`).join('');
+  const rows = DOCS.slice().sort((a,b)=>natural(KINDS[a.kind].n,KINDS[b.kind].n)).map(d=>`<tr><td><span class="dot ${d.kind==='unknown'||d.foreign?'bad':'ok'}"></span> ${esc(KINDS[d.kind].n)}${d.foreign?' <span class="pill bad">other WO</span>':''}</td><td>${esc(d.name)}</td><td class="num">${d.pages}</td><td class="muted" style="white-space:normal">${esc(docSummary(d))}</td><td style="white-space:nowrap">${d.bytes?`<button class="btn sm primary" data-orig="${d.id}">Open PDF</button> <button class="btn sm" data-pages="${d.id}|all">View here</button>`:''} <button class="btn sm" data-rmdoc="${d.id}">Remove</button></td></tr>`).join('');
   return `<div class="viewbar"><h2>Documents</h2><button class="btn sm" data-addmore="1">Add PDFs</button><div class="hint">Open PDF shows the original file in a new browser tab. Each file is identified from its contents. Adding a newer copy of a document replaces the old one. PoleForeman files can hold one pole or the whole package.</div></div><div class="tscroll"><table><thead><tr><th>Type</th><th>File</th><th class="num">Pages</th><th>What was read</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
@@ -2753,6 +2903,7 @@ $('#view').addEventListener('change', e=>{
   if (t.dataset.set){ const v=parseFloat(t.value); if(!isNaN(v)){ S[t.dataset.set]=v; saveS(); runChecks(); renderKpis(); toast('Checks updated'); } }
   if (t.dataset.fil){ FIL[t.dataset.fil]=t.value; render(); }
   if (t.dataset.sets){ S[t.dataset.sets]=t.value; saveS(); toast('Saved'); }
+  if (t.dataset.scope){ if (t.value) SCOPECHK[t.dataset.scope]=t.value; else delete SCOPECHK[t.dataset.scope]; try{ localStorage.setItem('pfqc:scope', JSON.stringify(SCOPECHK)); }catch(e){} }
   if (t.dataset.skchk){ if (t.checked) SKCHK[t.dataset.skchk]=true; else delete SKCHK[t.dataset.skchk]; try{ localStorage.setItem('pfqc:skchk', JSON.stringify(SKCHK)); }catch(err){} const y=window.scrollY; renderKpis(); const keep=SKZ; render(); SKZ=keep; skApply(); window.scrollTo(0,y); }
 });
 $('#view').addEventListener('input', e=>{ const t=e.target; if (t.dataset.fil==='q'){ FIL.q=t.value; const pos=t.selectionStart; render(); const n=$('#view [data-fil="q"]'); if(n){ n.focus(); n.setSelectionRange(pos,pos);} } });
