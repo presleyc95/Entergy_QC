@@ -617,7 +617,7 @@ function parseIFC(pages) {
   if ((m = T.match(/Substation\s+([A-Z][A-Z ]+?)\s+Maximo/))) I.meta.substation = m[1].trim();
   pages.forEach(p => {
     const txt = p.lines.map(l => l.text).join('\n');
-    if (/Circuit Bkr ID/.test(txt)) { if (!I.sketchPage) I.sketchPage = p.pageNo; return; }
+    if (/Circuit Bkr ID/.test(txt)) { if (!I.sketchPage) I.sketchPage = p.pageNo; (I.sketchPages = I.sketchPages || []).push(p.pageNo); return; }
     if (/CUE Estimate Station Details|Labor Hours :/.test(txt)) { I.stationPages.push(p); return; }
     const hdr = p.lines.find(l => l.cells[0] === 'CUE Station');
     if (hdr) { I.tablePage = I.tablePage || p.pageNo; parseDesignTable(p, hdr, I); return; }
@@ -662,21 +662,50 @@ function parseDesignTable(p, hdr, I) {
 }
 
 /* ================= Job sketch ================= */
-function parseSketch(pages, pageNo) {
-  const p = pages.find(x => x.pageNo === pageNo) || pages.find(x => x.lines.some(l => /Circuit Bkr ID/.test(l.text))) || pages[0];
-  const K = { page: p.pageNo, labels: [], fields: {} };
+const SKGAP = 40; // gap between stacked sketch pages, in PDF points
+// sketch pages: every page with the title block; a sketch file with none uses all its pages
+function sketchPageNos(pages, whole) {
+  const tb = pages.filter(x => x.lines.some(l => /Circuit Bkr ID/.test(l.text))).map(x => x.pageNo);
+  return tb.length ? tb : whole ? pages.map(x => x.pageNo) : [pages[0].pageNo];
+}
+// a multi-page sketch is read as one drawing: pages stacked top to bottom, narrower ones centred
+function parseSketch(pages, pageNos) {
+  if (!Array.isArray(pageNos)) pageNos = pageNos ? [pageNos] : sketchPageNos(pages, true);
+  const ps = pageNos.map(n => pages.find(x => x.pageNo === n)).filter(Boolean); if (!ps.length) ps.push(pages[0]);
+  const W = Math.max(...ps.map(p => p.w)); let top = 0;
+  const K = { page: ps[0].pageNo, pages: [], labels: [], fields: {} };
   const map = { 'WO': 'wo', 'Work Order ID': 'powerplan', 'Address': 'address', 'ARC Flash': 'arc', 'Sub': 'sub', 'Circuit Bkr ID': 'circuit', 'Phase': 'phase', 'Date': 'date', 'Designer': 'designer', 'Latitude': 'lat', 'Longitude': 'lon', 'WO Title': 'title', 'Rev#': 'rev', 'WO Type': 'woType', 'Contact Person': 'contact', 'Phone#': 'phone', 'County/Parish': 'county', 'Local Office': 'office', 'Page': 'pageOf' };
+  const tl = [], annCallouts = [];
+  ps.forEach(p0 => {
+    const dx = (W - p0.w) / 2, dy = top; top += p0.h + SKGAP;
+    K.pages.push({ page: p0.pageNo, x0: dx, y0: dy, w: p0.w, h: p0.h });
+    const p = { ...p0, lines: p0.lines.map(l => ({ ...l, y: l.y + dy, xs: l.xs.map(x => x + dx), xe: l.xe && l.xe.map(x => x + dx) })),
+      annots: (p0.annots || []).map(a => ({ ...a, x: a.x + dx, x0: a.x0 + dx, x1: a.x1 + dx, y: a.y + dy, y0: a.y0 + dy, y1: a.y1 + dy })) };
+    sketchPageRead(p, K, map, tl, annCallouts);
+  });
+  K.w = W; K.h = top - SKGAP;
+  const textCallouts = ocrCallouts(tl).filter(c => !annCallouts.some(a => a.dloc && a.dloc === c.dloc));
+  K.callouts = [...annCallouts, ...textCallouts].filter((c, i, a) => a.findIndex(x => x.id === c.id && x.dloc === c.dloc && x.lines.join('|') === c.lines.join('|')) === i);
+  annCallouts.forEach(c => c.lines.forEach((t, i) => tl.push({ text: t, x0: c.box.x0, x1: c.box.x1, y0: c.box.y0 + i * 10, y1: c.box.y0 + i * 10 + 9, h: 9 })));
+  K.textLines = tl.map(l => ({ t: l.text, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 }));
+  return K;
+}
+function sketchPageRead(p, K, map, tl, annCallouts) {
   p.lines.forEach(l => {
     l.cells.forEach((c, i) => {
       const m = c.match(/^([A-Za-z#/ ]+?):\s*(.*)$/);
-      if (m && map[m[1].trim()]) K.fields[map[m[1].trim()]] = m[2].trim();
-      if (/^Scale/.test(c)) K.fields.scale = c.replace(/^Scale\s*/, '');
-      if (/^[A-Z]{0,3}\d{1,4}$/.test(c) && l.cells.length === 1) K.labels.push({ id: c, x: l.xs[i], y: l.y });
+      if (m && map[m[1].trim()] && K.fields[map[m[1].trim()]] == null) K.fields[map[m[1].trim()]] = m[2].trim();
+      if (/^Scale/.test(c) && !K.fields.scale) K.fields.scale = c.replace(/^Scale\s*/, '');
+      if (/^[A-Z]{0,3}\d{1,4}$/.test(c) && l.cells.length === 1 && !K.labels.some(x => x.id === c)) K.labels.push({ id: c, x: l.xs[i], y: l.y });
+      // hyphenated pole labels (P-1, PL-12); span labels like S-3 are left out. Labels close together can share a cell ("P-9 P-18")
+      const hy = c.trim().split(/\s+/);
+      if (hy.every(t => /^[A-Z]{1,4}-\d{1,4}[A-Z]?$/.test(t))) { const x0 = l.xs[i], x1 = (l.xe || [])[i] ?? x0 + 24 * hy.length;
+        hy.forEach((t, j) => { if (!/^(?:P|PL|POLE|STA)-/.test(t)) return; const at = { x: x0 + (x1 - x0) * j / hy.length, y: l.y };
+          // a label repeated at a match line is kept once; the other spots are remembered so the one nearest its callout can be used
+          const had = K.labels.find(x => x.id === t); if (had) (had.alts = had.alts || [{ x: had.x, y: had.y }]).push(at); else K.labels.push({ id: t, ...at }); }); }
     });
   });
-  K.w = p.w; K.h = p.h;
-  const tl = p.lines.map(l => ({ text: l.text, x0: l.xs[0], x1: (l.xe || l.xs)[l.cells.length - 1] || l.xs[0] + 40, y0: l.y - 9, y1: l.y + 1, h: 10 }));
-  const annCallouts = [];
+  p.lines.forEach(l => tl.push({ text: l.text, x0: l.xs[0], x1: (l.xe || l.xs)[l.cells.length - 1] || l.xs[0] + 40, y0: l.y - 9, y1: l.y + 1, h: 10 }));
   (p.annots || []).forEach(a => { const parts = String(a.text).split(/[\r\n]+/).map(t => t.trim()).filter(Boolean); if (!parts.length || a.x0 == null) return;
     const lh = Math.max(8, Math.min(14, (a.y1 - a.y0) / parts.length)); const al = parts.map((t, i) => ({ text: t, x0: a.x0 + 2, x1: a.x1, y0: a.y0 + i * lh, y1: a.y0 + (i + 1) * lh - 1, h: lh - 1 }));
     const T = parts.join('\n'); let m;
@@ -686,11 +715,6 @@ function parseSketch(pages, pageNo) {
     if ((m = T.match(/ARC Flash:\s*([\d.]+)/i)) && !K.fields.arc) K.fields.arc = m[1];
     if (/DLOC/i.test(T) || (/^Lat/im.test(T) && /^Lon/im.test(T))) { const c = ocrCallouts(al)[0]; if (c) { c.box = { x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1 }; c.fromAnnot = true; annCallouts.push(c); } }
     else al.forEach(l => tl.push(l)); });
-  const textCallouts = ocrCallouts(tl).filter(c => !annCallouts.some(a => a.dloc && a.dloc === c.dloc));
-  K.callouts = [...annCallouts, ...textCallouts].filter((c, i, a) => a.findIndex(x => x.id === c.id && x.dloc === c.dloc && x.lines.join('|') === c.lines.join('|')) === i);
-  annCallouts.forEach(c => c.lines.forEach((t, i) => tl.push({ text: t, x0: c.box.x0, x1: c.box.x1, y0: c.box.y0 + i * 10, y1: c.box.y0 + i * 10 + 9, h: 9 })));
-  K.textLines = tl.map(l => ({ t: l.text, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 }));
-  return K;
 }
 
 /* ================= CUE summaries ================= */
@@ -1125,8 +1149,8 @@ async function readDoc(file, onStep){
   if (K==='pf') { rec.data = { poles: await pfRecords(pdf, pages, id, file.name, onStep) }; if (!rec.data.poles.length) throw new Error('No PoleForeman analyses found in this file.'); }
   else if (K==='station') rec.data = parseStation(pages);
   else if (K==='wo') rec.data = parseWO(pages);
-  else if (K==='ifc') { const I = parseIFC(pages); delete I.stationPages; if (I.sketchPage){ I.sketch = parseSketch(pages, I.sketchPage); I.sketchImg = await sketchImage(pdf, I.sketchPage); } rec.data = I; }
-  else if (K==='sketch') { const K2 = parseSketch(pages); rec.data = { sketch:K2, sketchImg: await sketchImage(pdf, K2.page) }; }
+  else if (K==='ifc') { const I = parseIFC(pages); delete I.stationPages; if (I.sketchPage){ I.sketch = parseSketch(pages, I.sketchPages); I.sketchImg = await sketchImage(pdf, I.sketch); } rec.data = I; }
+  else if (K==='sketch') { const K2 = parseSketch(pages); rec.data = { sketch:K2, sketchImg: await sketchImage(pdf, K2) }; }
   else if (K==='jobcost') rec.data = parseJobCost(pages);
   else if (K==='costdist') rec.data = parseCostDist(pages);
   else if (K==='labor') rec.data = parseLabor(pages);
@@ -1146,7 +1170,26 @@ async function readDoc(file, onStep){
   return rec;
 }
 const SKS = 2.4; // sketch image scale
-async function sketchImage(pdf, n){ const cv = await renderPage(pdf, n, SKS); return { src: cv.toDataURL('image/jpeg', 0.86), w: cv.width, h: cv.height, scale: SKS }; }
+const skPagesOf = K => K.pages || [{ page: K.page, x0: 0, y0: 0 }];
+// every sketch page drawn onto one image, laid out as parseSketch stacked them
+async function sketchImage(pdf, K){
+  const sc = Math.min(SKS, 16000 / Math.max(K.w, K.h)); // stay inside browser canvas limits on long sketches
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(K.w * sc); cv.height = Math.ceil(K.h * sc);
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  for (const pg of skPagesOf(K)) ctx.drawImage(await renderPage(pdf, pg.page, sc), Math.round(pg.x0 * sc), Math.round(pg.y0 * sc));
+  return { src: cv.toDataURL('image/jpeg', 0.86), w: cv.width, h: cv.height, scale: sc };
+}
+// sketches saved before multi-page support: read again from the stored PDF
+async function upgradeSketches(docs){
+  for (const d of docs){ const K = d.kind==='sketch' ? d.data.sketch : d.kind==='ifc' ? d.data.sketch : null;
+    if (!K || K.pages || !d.bytes) continue;
+    try { const pdf = await pdfOf(d), pages = await textPages(pdf);
+      const nos = d.kind==='sketch' ? sketchPageNos(pages, true) : sketchPageNos(pages);
+      if (nos.length < 2) { K.pages = skPagesOf(K); dbPut(d); continue; }
+      const K2 = parseSketch(pages, nos), img = await sketchImage(pdf, K2);
+      if (d.kind==='sketch') d.data = { sketch:K2, sketchImg:img }; else { d.data.sketch = K2; d.data.sketchImg = img; d.data.sketchPages = nos; delete d.data.ocr; }
+      dbPut(d);
+    } catch(e){ console.error(e); } } }
 
 async function handleFiles(files){
   files=[...files].filter(Boolean); if(!files.length) return;
@@ -1177,7 +1220,7 @@ $('#file').setAttribute('accept','application/pdf,.pdf,.xlsx,.png,.jpg,.jpeg,.we
 ['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault(); if(ev==='drop'||e.target===document.documentElement) drop.classList.remove('over');}));
 document.addEventListener('drop',e=>{ const fs=e.dataTransfer?.files; if(fs&&fs.length) handleFiles(fs); });
 $('#clearAll').onclick=async()=>{ if(!confirm('Remove every loaded document and start a new package?')) return; for (const d of DOCS) await dbDel(d.id); DOCS=[]; POLES=[]; STN=[]; CUR=null; PDFC.clear(); $('#empty').hidden=false; $('#app').hidden=true; $('#addMore').hidden=$('#clearAll').hidden=true; $('#fileList').innerHTML=''; };
-dbAll().then(recs=>{ recs = recs.filter(r=>r.id!=='__scoretpl'); if (recs.length){ const b=$('#restore'); b.hidden=false; b.textContent=`Reopen last package (${recs.length} document${recs.length>1?'s':''})`; b.onclick=()=>{ DOCS=recs.sort((a,b)=>a.added-b.added); rebuild(); queueOCR(); }; } });
+dbAll().then(recs=>{ recs = recs.filter(r=>r.id!=='__scoretpl'); if (recs.length){ const b=$('#restore'); b.hidden=false; b.textContent=`Reopen last package (${recs.length} document${recs.length>1?'s':''})`; b.onclick=async()=>{ DOCS=recs.sort((a,b)=>a.added-b.added); await upgradeSketches(DOCS); rebuild(); queueOCR(); }; } });
 $('#themeBtn').onclick=()=>{ const cur=document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); const n=cur==='dark'?'light':'dark'; document.documentElement.dataset.theme=n; try{localStorage.setItem('pfqc:theme',n);}catch(e){} };
 try{ const t=localStorage.getItem('pfqc:theme'); if(t) document.documentElement.dataset.theme=t; }catch(e){}
 
@@ -1207,9 +1250,13 @@ async function runOCR(){
     for (const d of todo){
       const pdf = await pdfOf(d);
       if (d.kind==='sketch' || d.kind==='ifc'){
-        const pn = d.kind==='sketch' ? d.data.sketch.page : d.data.sketchPage; const sc = 3.5;
-        ocrStatus('Reading sketch text…'); ocrP = p=>ocrStatus(`Reading sketch text ${Math.round(p*100)}%`);
-        const cv = await renderPage(pdf, pn, sc); const lines = tsvLines(await ocrTSV(cv));
+        const pgs = skPagesOf(d.data.sketch); const sc = 3.5; const lines = [];
+        for (const [i, pg] of pgs.entries()){
+          const of = pgs.length>1 ? ` (page ${i+1} of ${pgs.length})` : '';
+          ocrStatus(`Reading sketch text${of}…`); ocrP = p=>ocrStatus(`Reading sketch text${of} ${Math.round(p*100)}%`);
+          const cv = await renderPage(pdf, pg.page, sc), dx = pg.x0*sc, dy = pg.y0*sc;
+          tsvLines(await ocrTSV(cv)).forEach(l => lines.push({ ...l, x0:l.x0+dx, x1:l.x1+dx, y0:l.y0+dy, y1:l.y1+dy }));
+        }
         d.data.ocr = { scale: sc, callouts: ocrCallouts(lines), lines: lines.map(l=>({t:l.text, x0:l.x0, y0:l.y0, x1:l.x1, y1:l.y1})) };
       } else if (d.kind==='photos'){
         for (const pg of d.data.pages){ if (pg.ocr) continue; ocrStatus(`Reading photo label ${pg.page} of ${d.data.pages.length}`); ocrP=null;
@@ -1348,6 +1395,8 @@ function buildStations(){
   (SK?.K.labels||[]).forEach(l=>{ const s=map.get(nkey(l.id)) || get(l.id); s.skLabel=l; });
   map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key && !WO.notes[k].heading) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
   (skCO()?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
+  map.forEach(s=>{ const L=s.skLabel; if (!L?.alts || !s.sk) return; const k=1/skCO().scale, b=s.sk.box, cx=(b.x0+b.x1)/2*k, cy=(b.y0+b.y1)/2*k;
+    const n=L.alts.reduce((a,p)=>Math.hypot(p.x-cx,p.y-cy)<Math.hypot(a.x-cx,a.y-cy)?p:a); s.skLabel={...L, x:n.x, y:n.y}; });
   const all = order.map(k=>map.get(k));
   // photos
   const ph = PKG.photos?.data.pages||[];
@@ -1399,13 +1448,16 @@ function scopeOf(s){
       wo: T('wo', has('wo',RE.repl)), ifc: T('ifc', has('ifc',RE.repl)), sk: T('sk', has('sk',RE.repl)),
       pf: !s.pf ? C.none('no report') : d.has250C ? C.ok('250B + 250C') : C.warn('250B only'),
       req: { wo:!!pI, ifc:!!pI, sk:!!pI } });
-    const exp = d.instHC || (d.has250C && d.pfSpec.len ? {h:d.pfSpec.len, c:d.pfSpec.c} : null);
-    const cmpP = (k, v, raw) => { if (src[k]==null && k!=='ifc') return C.none(noSrc[k]); if (!v) return C.miss(raw!=null?'height/class not stated':'not called out'); return exp && (v.h!==exp.h || v.c!==exp.c) ? C.bad(`${v.h}' class ${v.c}`) : C.ok(`${v.h}' class ${v.c}`); };
+    // PoleForeman sets the pole size; every other document is checked against it (station CU only when there's no report)
+    const pfHC = s.pf && d.pfSpec.len ? {h:d.pfSpec.len, c:d.pfSpec.c} : null;
+    const exp = pfHC || d.instHC;
+    const off = v => exp && (v.h!==exp.h || v.c!==exp.c);
+    const cmpP = (k, v, raw) => { if (src[k]==null && k!=='ifc') return C.none(noSrc[k]); if (!v) return C.miss(raw!=null?'height/class not stated':'not called out'); return off(v) ? C.bad(`${v.h}' class ${v.c}`) : C.ok(`${v.h}' class ${v.c}`); };
     const ifcP = s.ifc ? poleFromText(s.ifc.poleMacro) || poleFromText(s.ifc.comments) : null;
-    row({ key:'newpole', label: exp ? `New pole ${exp.h}' class ${exp.c}` : 'New pole size', cat:'Pole', expect: exp ? `${exp.h}' class ${exp.c}` : '',
-      cu: d.instHC ? C.ok(`${pI.cu}: ${d.instHC.h}' class ${d.instHC.c}`) : C.miss('no new pole CU'),
+    row({ key:'newpole', label: exp ? `New pole ${exp.h}' class ${exp.c}${pfHC?' (per PoleForeman)':''}` : 'New pole size', cat:'Pole', expect: exp ? `${exp.h}' class ${exp.c}` : '',
+      cu: d.instHC ? (pfHC && off(d.instHC) ? C.bad : C.ok)(`${pI.cu}: ${d.instHC.h}' class ${d.instHC.c}`) : C.miss('no new pole CU'),
       wo: cmpP('wo', poleFromText(src.wo), src.wo), ifc: s.ifc ? cmpP('ifc', ifcP, '') : C.none(noSrc.ifc), sk: cmpP('sk', poleFromText(src.sk), src.sk),
-      pf: !s.pf ? C.none('no report') : (d.pfSpec.len && exp && (d.pfSpec.len!==exp.h || d.pfSpec.c!==exp.c)) ? C.bad(`models ${s.pf.R.poleSpec}`) : C.ok(s.pf.R.poleSpec||''),
+      pf: !s.pf ? C.none('no report') : pfHC ? C.ok(s.pf.R.poleSpec) : C.warn(s.pf.R.poleSpec ? `height/class not read from ${s.pf.R.poleSpec}` : 'no pole spec in report'),
       req: { cu:true, wo:false, ifc:false, sk:!!pI } });
   }
 
@@ -2375,7 +2427,7 @@ function cuFixes(s){
   const sv = sysLN();
   if (sv) cus.forEach((c,i)=>{ if (!CU.xfmr(c) || c.wf!=='I') return; const pri = pfNum((cuDesc(c).match(/(\d{4,5})\s*-\s*\d+\//)||[])[1]); if (pri && Math.abs(pri-sv.ln)/sv.ln > 0.07){ const rep = xfmrReplacement(c, sv.ln); put(i,'Incorrect CU',`${c.cu} is a ${pri.toLocaleString()} V transformer on a ${sv.kv} kV system (${Math.round(sv.ln).toLocaleString()} V). ${rep?`${WFN[c.wf]==='transfer'?'Transfer':'Use'} ${rep.cu} (${rep.d}).`:'Use the matching-voltage CU.'}`); } });
   const rows = scopeOf(s);
-  const np = rows.find(r=>r.key==='newpole'); if (np && s.d.poleInst && s.pf && np.pf && np.pf.s==='bad') put(cus.indexOf(s.d.poleInst),'Incorrect CU',`PoleForeman models ${s.pf.R.poleSpec}; station installs ${s.d.poleInst.cu}.`);
+  const np = rows.find(r=>r.key==='newpole'); if (np && s.d.poleInst && s.pf && np.cu && np.cu.s==='bad') put(cus.indexOf(s.d.poleInst),'Incorrect CU',`PoleForeman models ${s.pf.R.poleSpec}; station installs ${s.d.poleInst.cu}.`);
   const gs = rows.find(r=>r.key==='guysize'); if (gs && gs.cu && gs.cu.s==='bad' && s.d.agI[0]) put(cus.indexOf(s.d.agI[0]),'Incorrect CU',`Guy size doesn't match PoleForeman (${gs.expect}).`);
   return out;
 }
@@ -2422,7 +2474,7 @@ function scDeliverables(){
   const woProj = i => i.pole==='Project' && /WO (start|end) DLOC/i.test(i.title);
   if (ISS.some(woProj)) out[10] = { v:'', note: ISS.filter(woProj).map((i,n)=>`${n+1}. ${i.title}`).join('\n') };
   row(15, 'jacket');
-  row(16, ['sketch'].concat(PKG.sketch?[]:['ifc']), i=>!i.loc || !PKG.ifc || i.loc.doc!==PKG.ifc.id || i.loc.page===PKG.ifc.data.sketchPage, i=>i.loc && i.loc.sketch);
+  row(16, ['sketch'].concat(PKG.sketch?[]:['ifc']), i=>!i.loc || !PKG.ifc || i.loc.doc!==PKG.ifc.id || (PKG.ifc.data.sketchPages||[PKG.ifc.data.sketchPage]).includes(i.loc.page), i=>i.loc && i.loc.sketch);
   row(17, 'vicinity');
   row(18, 'station', i=>['Estimate','Station','Naming'].includes(i.cat));
   const cuIss = ISS.some(i=>i.sev!=='info' && i.pole!=='Project' && (i.cat==='CU' || /station details/i.test(i.src)));
@@ -2659,8 +2711,8 @@ function docSummary(d, as){
   switch(d.kind){
     case 'pf': return `${x.poles.length} reports: ${x.poles.map(p=>`${p.id} (${p.R.ruleOrder.join('+')})`).join(', ')}`;
     case 'station': return `${x.order.length} stations, ${f2(x.meta.onsite)} on-site hours`;
-    case 'ifc': return as==='sketch' ? `sketch on page ${x.sketchPage}` : as==='station' ? `station details, ${x.station.order.length} stations` : `design summary for ${x.order.length} poles${x.sketchPage?`, sketch p. ${x.sketchPage}`:''}${x.station?', station details':''}`;
-    case 'sketch': return `labels ${x.sketch.labels.map(l=>l.id).join(', ')}${x.ocr?` · ${x.ocr.callouts.length} callouts read`:' · text not read yet'}`;
+    case 'ifc': return as==='sketch' ? `sketch on page${(x.sketchPages||[]).length>1?'s':''} ${(x.sketchPages||[x.sketchPage]).join(', ')}` : as==='station' ? `station details, ${x.station.order.length} stations` : `design summary for ${x.order.length} poles${x.sketchPage?`, sketch p. ${x.sketchPage}`:''}${x.station?', station details':''}`;
+    case 'sketch': return `${skPagesOf(x.sketch).length>1?`${skPagesOf(x.sketch).length} pages · `:''}${x.sketch.labels.length?`labels ${x.sketch.labels.map(l=>l.id).join(', ')} · `:''}${x.ocr?`${x.ocr.callouts.length} callouts read`:(x.sketch.callouts||[]).some(c=>c.dloc||c.lat)?`${x.sketch.callouts.filter(c=>c.dloc||c.lat).length} callouts in the PDF text`:'text not read yet'}`;
     case 'wo': return `${x.noteOrder.length} pole notes, ${x.materials.length} materials, targets ${x.meta.targetStart||'?'} to ${x.meta.targetFinish||'?'}`;
     case 'jobcost': return `total ${money(x.total)}`;
     case 'costdist': return `total ${money(x.total)}`;
@@ -2728,7 +2780,7 @@ function renderSketch(){
     return `<button class="chipb ${x.id===s?.id?'on':''}" data-sk="${esc(x.id)}"><span class="dot ${bad?'bad':done===it.length?'ok':'warn'}"></span>${esc(x.id)} <span class="muted">${done}/${it.length}</span></button>`; }).join('');
   const ocrBtn = skCO() ? `<span class="muted sm">${skCO().callouts.length} callouts ${skCO().text?'read from the sketch PDF':'read from the drawing'}</span>` : `<button class="btn sm primary" data-ocr="1">Read sketch text</button>`;
   return `<div class="viewbar"><h2>Sketch vs station details</h2>${ocrBtn}<div class="hint">Pick a pole to zoom to it. Each CU-driven item is checked against the callout text; tick Seen once you've seen it on the drawing. Drag to pan, scroll to zoom.</div></div>
-  <div class="skwrap"><div class="skview"><div class="sktools"><button class="btn sm" data-skz="out" aria-label="Zoom out">−</button><button class="btn sm" data-skz="fit">Fit</button><button class="btn sm" data-skz="in" aria-label="Zoom in">+</button><button class="btn sm" data-skz="pole">Zoom to ${esc(s?.id||'')}</button><span class="spacer"></span><button class="btn sm" data-pages="${SK.doc.id}|${SK.K.page}">Open page</button></div>
+  <div class="skwrap"><div class="skview"><div class="sktools"><button class="btn sm" data-skz="out" aria-label="Zoom out">−</button><button class="btn sm" data-skz="fit">Fit</button><button class="btn sm" data-skz="in" aria-label="Zoom in">+</button><button class="btn sm" data-skz="pole">Zoom to ${esc(s?.id||'')}</button><span class="spacer"></span><button class="btn sm" data-pages="${SK.doc.id}|${skPagesOf(SK.K).map(p=>p.page).join(',')}">Open page${skPagesOf(SK.K).length>1?'s':''}</button></div>
     <div class="skvp" id="skvp"><div class="skin" id="skin"><img src="${SK.img.src}" width="${SK.img.w}" height="${SK.img.h}" alt="Job sketch" draggable="false">${skOverlay(s)}</div></div></div>
   <div class="skside"><div class="chips" style="margin-bottom:10px">${chips}</div>${s?skPanel(s):''}</div></div>`;
 }
