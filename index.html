@@ -975,7 +975,7 @@ function ocrCallouts(lines) {
   lines = lines.map(l => ({ ...l, text: ocrNormP(String(l.text).replace(/\s+/g, ' ').trim()) })).filter(l => l.text).sort((a, b) => a.y0 - b.y0);
   const out = [], used = new Set();
   const isHead = t => /^[A-Z]{0,3}\s?-?\d{1,4}[A-Z]?\s*[:.]?$/.test(t) && !/^\d+$/.test(t);
-  const isField = t => /^(D\s?L\s?O\s?C|Lat|Lon|Address|Notes?|Install|Replace|Remove|Transfer|Straighten|Add|Truck|Existing|Relocate|Set|Pole)/i.test(t);
+  const isField = t => /^(D\s?L\s?O\s?C|Lat|Lon|Address|Notes?|Scope|Transformer|Comms?|Install|Replace|Remove|Transfer|Straighten|Add|Truck|Existing|Relocate|Set|Pole)/i.test(t);
   const collect = (start, lh) => { const blk = [start]; let last = start;
     const cand = lines.filter(l => l !== start && l.y0 > start.y0 + 1 && Math.abs(l.x0 - start.x0) < lh * 2.4).sort((a, b) => a.y0 - b.y0);
     for (const l of cand) { const gap = l.y0 - last.y1; if (gap > lh * 3.4) break; if (gap > lh * 1.8 && !isField(l.text) && !/[a-z]{3}/i.test(l.text)) break; if (/^D\s?L\s?O\s?C/i.test(l.text) && blk.some(b => /^D\s?L\s?O\s?C/i.test(b.text))) break; if (isHead(l.text) && blk.length > 1) break; blk.push(l); last = l; }
@@ -985,7 +985,9 @@ function ocrCallouts(lines) {
     const g = re => { const x = txt.find(t => re.test(t)); return x ? x.match(re)[1] : null; };
     const dl = txt.find(t => /^D\s?L\s?O\s?C/i.test(t)); const dlm = dl && dl.match(/([0-9OoIl]{6,})/);
     const ni = txt.findIndex(t => /^Notes?\s*[:;]?/i.test(t)); const ai = txt.findIndex(t => /^Address/i.test(t));
-    const notes = ni >= 0 ? txt.slice(ni + 1) : txt.filter(t => /^(Install|Replace|Remove|Transfer|Straighten|Add|Truck|Relocate|Set)/i.test(t));
+    // everything that isn't the pole identity is scope text, whatever the designer labelled it (Notes:, Scope:, none)
+    const idLine = (t, i) => /^D\s?L\s?O\s?C|^Lat\w*\s*[:;.]?\s*-?\d|^Lon\w*\s*[:;.]?\s*-?\d|^Address\s*[:;]?$/i.test(t) || (ai >= 0 && i === ai + 1) || (ai >= 0 && i === ai);
+    const notes = txt.filter((t, i) => !idLine(t, i)).map(t => t.replace(/^(Notes?|Scope|Work|Description)\s*[:;-]\s*/i, '')).filter(t => t && !/^(Notes?|Scope)\s*[:;]?$/i.test(t));
     blk.forEach(b => used.add(b));
     const all = head ? [head, ...blk] : blk;
     return { id: head ? (head.text.match(/^([A-Z]{0,3})\s?-?(\d{1,4}[A-Z]?)/) || []).slice(1).join('') : null, dloc: dlm ? ocrDigits(dlm[1]) : null, lat: g(/^Lat\w*\s*[:;.]?\s*(-?[\d.]{3,})/i), lon: g(/^Lon\w*\s*[:;.]?\s*(-?[\d.]{3,})/i), addr: ai >= 0 && ai + 1 < txt.length && ai + 1 !== ni ? txt[ai + 1] : null, notes, lines: txt, box: { x0: Math.min(...all.map(b => b.x0)), y0: Math.min(...all.map(b => b.y0)), x1: Math.max(...all.map(b => b.x1)), y1: Math.max(...all.map(b => b.y1)) } };
@@ -1285,7 +1287,10 @@ function guyNums(t){
   const comp = t.match(/\b(NE|NW|SE|SW|N|S|E|W)\b(?=\s*,|\s+\d)/);
   return { lead: lead?pfNum(lead[1]||lead[2]||lead[3]):null, deg: deg?pfNum(deg[1]):null, att: att?pfNum(att[1]||att[2]):null, size: sizes.length?sizes[sizes.length-1]:null, compass: comp?comp[1]:null };
 }
-function poleFromText(t){ if(!t) return null; const m = t.match(/(\d{2})\s*(?:ft|')\s*(?:wood\s+)?pole,?\s*(?:class|cl\.?)\s*(\d)/i) || t.match(/WP(\d+)-(\d+)/i); return m?{h:+m[1], c:String(+m[2])}:null; }
+function poleFromText(t){ if(!t) return null;
+  const m = t.match(/\b(\d{2})\s*(?:ft\.?|'|foot|feet)?\s*(?:wood(?:en)?\s+)?(?:pole\s*)?,?\s*(?:class|cl\.?|c)\s*-?\s*(\d)\b/i)
+    || t.match(/\b(\d{2})\s*(?:ft|')?\s*[-\/]\s*C?(\d)\b(?!\s*(?:kva|in|"|°|deg))/i) || t.match(/WP(\d+)-(\d+)/i);
+  return m && +m[1]>=25 && +m[1]<=120 ? {h:+m[1], c:String(+m[2])} : null; }
 const attachIn = t => pfNum((String(t||'').match(/attach\w*\s*(?:height\s*)?(?:of\s*)?(\d+)\s*(?:in\b|")/i)||[])[1]);
 
 /* ---------- sketch source ---------- */
