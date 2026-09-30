@@ -85,6 +85,94 @@ async function pfRecords(pdf, pages, docId, fileName, onStep){
   return out;
 }
 
+/* ---------- PoleForeman report integrity: signs a page was changed after PoleForeman made it ----------
+   PoleForeman (DynamicPDF) writes every page the same way: each text item placed with its own text matrix, status
+   icons drawn from a few shared images at fixed offsets from their labels. A page edited in Acrobat or similar is
+   re-written in a different style, and icons pasted by hand land a fraction of a point off those offsets. */
+const PDF_EDITORS = /acrobat|bluebeam|foxit|nitro|pdf-?xchange|sejda|ilovepdf|smallpdf|pdfelement|wondershare|kofax|power ?pdf|microsoft|word|preview|quartz/i;
+async function iconColour(page, id){
+  try { const store = id.startsWith('g_') ? page.commonObjs : page.objs; const o = await new Promise(r=>store.get(id, r)); if (!o) return '';
+    let d = o.data, step = o.kind===3 ? 4 : 3;
+    if (!d && o.bitmap){ const cv=document.createElement('canvas'); cv.width=o.width; cv.height=o.height; const x=cv.getContext('2d'); x.drawImage(o.bitmap,0,0); d=x.getImageData(0,0,o.width,o.height).data; step=4; }
+    if (!d) return ''; let r=0,g=0,b=0,c=0;
+    for (let i=0;i<d.length;i+=step){ if (step===4 && d[i+3]<128) continue; if (d[i]>230&&d[i+1]>230&&d[i+2]>230) continue; r+=d[i]; g+=d[i+1]; b+=d[i+2]; c++; }
+    if (!c) return ''; r/=c; g/=c; b/=c;
+    return g>r+40 && g>b+40 ? 'pass' : r>200 && g>140 && b<90 ? 'warn' : r>170 && g<110 && b<110 ? 'fail' : '';
+  } catch(e){ return ''; }
+}
+async function pfScanPages(pdf, onStep){
+  const O = pdfjsLib.OPS, col = {}, pages = [];
+  for (let n=1;n<=pdf.numPages;n++){
+    onStep && onStep(`Checking PoleForeman pages for edits, page ${n} of ${pdf.numPages}`);
+    const p = await pdf.getPage(n); const [ol, tc] = await Promise.all([p.getOperatorList(), p.getTextContent()]);
+    let ctm=[1,0,0,1,0,0], tm=0, tj=0; const st=[], icons=[];
+    for (let k=0;k<ol.fnArray.length;k++){ const f=ol.fnArray[k], a=ol.argsArray[k];
+      if (f===O.save) st.push(ctm); else if (f===O.restore) ctm=st.pop()||ctm; else if (f===O.transform) ctm=pdfjsLib.Util.transform(ctm,a);
+      else if (f===O.setTextMatrix) tm++; else if (f===O.showText || f===O.showSpacedText) tj++;
+      else if (f===O.paintImageXObject && a[1]<=128 && a[2]<=128 && Math.abs(ctm[0])>=6 && Math.abs(ctm[0])<=40){ if (!(a[0] in col)) col[a[0]] = await iconColour(p, a[0]); icons.push({ x:ctm[4], y:ctm[5], s:ctm[0], c:col[a[0]] }); } }
+    const items = tc.items.filter(t=>t.str.trim()).map(t=>({ s:t.str.trim(), f:t.fontName, x:t.transform[4], y:t.transform[5], w:t.width, h:Math.abs(t.transform[3])||t.height||10 }));
+    // each icon belongs to the label just to its right
+    icons.forEach(i=>{ const cy=i.y+i.s/2; const t=items.filter(t=>{ const g=t.x-(i.x+i.s); return g>-1 && g<14 && Math.abs((t.y+t.h*0.35)-cy)<i.s*0.8; }).sort((a,b)=>a.x-b.x)[0];
+      if (t){ i.t=t.s; i.ti=items.indexOf(t); i.dx=Math.round((t.x-i.x)*100)/100; i.dy=Math.round((t.y-i.y)*100)/100; } });
+    pages.push({ n, tm, tj, icons, items });
+  }
+  return pages;
+}
+// findings per pole report, from the page scan; also returns what's true of the whole file
+function pfIntegrity(scan, poles, meta, saves){
+  const fx = [], page = n => scan[n-1];
+  // icon offsets PoleForeman uses in this file (hundreds of identical ones)
+  const key = i => `${Math.round(i.s*10)/10}|${i.dx}|${i.dy}`, hist = {};
+  scan.forEach(p=>p.icons.forEach(i=>{ if (i.dx!=null) hist[key(i)]=(hist[key(i)]||0)+1; }));
+  const grid = Object.entries(hist).filter(([,v])=>v>=3).map(([k])=>k.split('|').map(Number));
+  const texty = scan.filter(p=>p.tj>=10), rewritten = texty.filter(p=>p.tm/p.tj<0.25);
+  const wholeFile = texty.length>=4 && rewritten.length > texty.length*0.5;
+  const file = { producer: meta?.Producer||'', creator: meta?.Creator||'', created: meta?.CreationDate||'', modified: meta?.ModDate||'', saves, wholeFile, rewrittenPages: rewritten.map(p=>p.n) };
+  poles.forEach(P=>{
+    const out = P.integrity = [], mine = P.pageNos.map(page).filter(Boolean), pOf = n => `p. ${P.pageNos.indexOf(n)+1} of ${P.id} (file page ${n})`;
+    const f = (sev, title, detail, pg) => out.push({ sev, title, detail, page: pg });
+    // 1. pages re-written by another program
+    if (!wholeFile){ const rw = mine.filter(p=>p.tj>=10 && p.tm/p.tj<0.25).map(p=>p.n);
+      if (rw.length) f('bad', `${rw.length===1?'A page':`${rw.length} pages`} of the ${P.id} report ${rw.length===1?'was':'were'} re-written by another program after PoleForeman created ${rw.length===1?'it':'them'}`, `File page${rw.length>1?'s':''} ${rw.join(', ')}. PoleForeman places every piece of text on its own; these pages were saved by a PDF editor, which happens when text or icons are changed. Compare with the original PoleForeman export.`, rw[0]); }
+    // 2. icons not where PoleForeman puts them
+    const off = [];
+    mine.forEach(p=>p.icons.forEach(i=>{ if (i.dx==null || !grid.length) return; const d = Math.min(...grid.map(([s,dx,dy])=>Math.hypot(dx-i.dx, dy-i.dy) + (Math.abs(s-i.s)>0.5 ? 1 : 0)));
+      if (d>0.25 && d<4) off.push({ p:p.n, t:i.t, d, c:i.c }); }));
+    if (off.length) f('bad', `${off.length===1?'A status icon':`${off.length} status icons`} on the ${P.id} report ${off.length===1?'is':'are'} out of place`, `PoleForeman draws every icon at exactly the same spot beside its label (${Object.values(hist).reduce((a,b)=>a+b,0)-off.length} others in this file line up to within 0.01 pt). These are off by a fraction of a point, which is what a hand-pasted icon looks like: ${off.map(o=>`"${o.t.slice(0,24)}" ${o.c||''} icon on file page ${o.p} (${f1(o.d)} pt off)`).join('; ')}.`, off[0].p);
+    // 3. labels that should have an icon but don't
+    mine.forEach(p=>{ const withIcon = new Set(p.icons.map(i=>i.ti));
+      const hdr = p.items.find(t=>/^250[A-Z] Summary:$/.test(t.s));
+      p.items.forEach((t,ix)=>{ if (withIcon.has(ix)) return; let why = null;
+        if (hdr && /^(Pole|Framings|Guying)$/.test(t.s) && Math.abs(t.y-hdr.y)<3) why = `the ${hdr.s.replace(' Summary:','')} header`;
+        else if (/^(Span|Anchor) \d+:/.test(t.s) || /^Span Guy \d+/.test(t.s)) why = 'the report body';
+        else if (/^\d+%$/.test(t.s) && p.items.some(r=>/^250[A-Z]$/.test(r.s) && Math.abs(r.y-t.y)<3) && p.items.some(h=>h.s==='Guying' && h.y>t.y && h.y-t.y<40)) why = 'the analysis summary';
+        if (why) f('bad', `"${t.s}" has no status icon in ${why} (${pOf(p.n)})`, 'PoleForeman always draws a pass, warning or fail icon here. A missing one usually means it was deleted.', p.n); }); });
+    // 4. the same status shown differently on different pages
+    const hdrCol = {}; mine.forEach(p=>{ const h=p.items.find(t=>/^250[A-Z] Summary:$/.test(t.s)); if (!h) return; const rule=h.s.slice(0,4);
+      p.icons.filter(i=>/^(Pole|Framings|Guying)$/.test(i.t||'') && i.c).forEach(i=>{ ((hdrCol[rule]=hdrCol[rule]||{})[i.t]=hdrCol[rule][i.t]||{})[i.c]=[...(hdrCol[rule][i.t][i.c]||[]), p.n]; }); });
+    Object.entries(hdrCol).forEach(([rule,comps])=>Object.entries(comps).forEach(([comp,byC])=>{ const cs=Object.keys(byC); if (cs.length<2) return;
+      const odd = cs.sort((a,b)=>byC[a].length-byC[b].length)[0];
+      f('bad', `${rule} ${comp} status changes between pages of the ${P.id} report`, cs.map(c=>`${c} on file page${byC[c].length>1?'s':''} ${byC[c].join(', ')}`).join(' · ')+'. PoleForeman prints the same header on every page, so one of them was changed.', byC[odd][0]); }));
+    // 5. summary table: icon colours against the numbers and the page headers; the rule PoleForeman flagged in bold
+    const sp = mine.find(p=>p.items.some(t=>t.s==='Analysis Summary'));
+    if (sp){ const head = sp.items.find(t=>t.s==='Guying' && sp.items.some(r=>/^250[A-Z]$/.test(r.s) && r.y<t.y && t.y-r.y<40));
+      sp.items.filter(r=>/^250[A-Z]$/.test(r.s) && head && r.y<head.y && head.y-r.y<40).forEach(r=>{
+        const cells = sp.items.filter(t=>/^\d+%$/.test(t.s) && Math.abs(t.y-r.y)<3).map(t=>({ t, i: sp.icons.find(i=>i.ti===sp.items.indexOf(t)) }));
+        cells.forEach(({t,i})=>{ if (i && i.c==='pass' && parseInt(t.s)>100) f('bad', `${r.s} ${t.s} has a pass icon on the ${P.id} summary`, 'Anything over 100% fails in PoleForeman.', sp.n); });
+        const bold = head && r.f===head.f, allPass = cells.length && cells.every(c=>!c.i || c.i.c==='pass');
+        if (bold && allPass) f('bad', `PoleForeman marked ${r.s} as not passing on the ${P.id} summary, but every icon shows a pass`, 'PoleForeman prints a rule that has a warning or failure in bold. The bold is still there, so the icons were most likely changed.', sp.n);
+        const worst = cs => cs.includes('fail')?'fail':cs.includes('warn')?'warn':cs.length?'pass':null;
+        const hdr = hdrCol[r.s] || {}; const pick = k => { const v = Object.keys(hdr[k]||{}); return v.length===1 ? v[0] : null; };
+        const heads = sp.items.filter(t=>/^(Pole H|Pole V|Framings|Guying)$/.test(t.s) && Math.abs(t.y-head.y)<3);
+        const colOf = t => heads.slice().sort((a,b)=>Math.abs(a.x+a.w/2-t.x-t.w/2)-Math.abs(b.x+b.w/2-t.x-t.w/2))[0]?.s;
+        const cIn = n => cells.filter(c=>colOf(c.t)===n).map(c=>c.i?.c).filter(Boolean);
+        const cols = { Pole: worst([...cIn('Pole H'), ...cIn('Pole V')]), Framings: worst(cIn('Framings')), Guying: worst(cIn('Guying')) };
+        Object.entries(cols).forEach(([k,v])=>{ const h=pick(k); if (v && h && v!==h) f('bad', `${r.s} ${k} is a ${v} on the ${P.id} summary but a ${h} on the ${r.s} pages`, '', sp.n); });
+      }); }
+  });
+  return file;
+}
+
 /* ---------- reading a file ---------- */
 async function readImage(file){ const url = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); const req = /mapping.?request|permit.?request/i.test(file.name.replace(/_/g,' ')); return { id:'d'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), name:file.name, kind:req?'mapreq':'scopeimg', pages:1, added:Date.now(), bytes:null, data: req ? { img:url, permit:permitOf(file.name) } : { img:url } }; }
 async function readDoc(file, onStep){
@@ -98,7 +186,10 @@ async function readDoc(file, onStep){
   rec.kind = docClassify(pages, file.name);
   const K = rec.kind;
   onStep && onStep(`Reading ${KINDS[K].n.toLowerCase()}`);
-  if (K==='pf') { rec.data = { poles: await pfRecords(pdf, pages, id, file.name, onStep) }; if (!rec.data.poles.length) throw new Error('No PoleForeman analyses found in this file.'); }
+  if (K==='pf') { rec.data = { poles: await pfRecords(pdf, pages, id, file.name, onStep) }; if (!rec.data.poles.length) throw new Error('No PoleForeman analyses found in this file.');
+    try { const meta = (await pdf.getMetadata()).info, raw = new TextDecoder('latin1').decode(bytes);
+      const saves = Math.max(0, (raw.match(/%%EOF/g)||[]).length - 1 - (/\/Linearized/.test(raw.slice(0,2048)) ? 1 : 0)); // each save after the first appends another %%EOF
+      rec.data.integrity = pfIntegrity(await pfScanPages(pdf, onStep), rec.data.poles, meta, saves); } catch(e){ console.error(e); } }
   else if (K==='station') rec.data = parseStation(pages);
   else if (K==='wo') rec.data = parseWO(pages);
   else if (K==='ifc') { const I = parseIFC(pages); delete I.stationPages; if (I.sketchPage){ I.sketch = parseSketch(pages, I.sketchPages); I.sketchImg = await sketchImage(pdf, I.sketch); } rec.data = I; }
@@ -600,6 +691,7 @@ function runChecks(dupPF){
   PF2ST = {}; STN.forEach(s=>{ if (s.pf) PF2ST[s.pf.id] = s.id; });
   const addP = (P, sev, cat, title, detail, rule) => add(P ? (PF2ST[P.id]||P.id) : null, sev, cat, title, detail, rule, 'PoleForeman');
   if (POLES.length) pfChecks(addP); else CONN = [];
+  POLES.forEach(P=>(P.integrity||[]).forEach(x=>add(PF2ST[P.id]||P.id, x.sev, 'Integrity', x.title, x.detail, '', 'PoleForeman', {doc:P.docId, page:x.page})));
   (dupPF||[]).forEach(id=>add(PF2ST[id]||id,'warn','Report',`More than one PoleForeman report for ${id}`,'The last one read is used.','', 'PoleForeman'));
   crossChecks(add);
   ISS.forEach(i=>{ if (!i.loc) i.loc = locFor(i); });
@@ -749,6 +841,15 @@ function crossChecks(add){
   /* package */
   Object.entries(KINDS).forEach(([k,v])=>{ if (v.need && !PKG[k] && !(k==='sketch' && SK) && !(k==='station' && ST)) add(null,'warn','Package',`No ${v.n} in this package`,'Checks that depend on it are skipped.'); });
   (PKG.unknown||[]).forEach(d=>add(null,'info','Package',`${d.name} wasn't recognized`,'It is listed under Documents but not checked.'));
+  /* PoleForeman file integrity */
+  const pdfDate = s => { const m=String(s||'').match(/(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/); return m ? `${+m[2]}/${+m[3]}/${m[1]}${m[4]?` ${m[4]}:${m[5]||'00'}`:''}` : ''; };
+  (PKG.pf||[]).forEach(d=>{ const I=d.data.integrity; if (!I) return; const loc={doc:d.id, page:1};
+    const by = [I.creator, I.producer].find(x=>PDF_EDITORS.test(x||''));
+    if (by) add(null,'info','Integrity',`${d.name} was saved by ${by.replace(/\s*\(.*$/,'')} after PoleForeman created it`, `Created ${pdfDate(I.created)||'?'}, last modified ${pdfDate(I.modified)||'?'}${I.saves?`, saved ${I.saves} more time${I.saves>1?'s':''} since`:''}. Combining reports in Acrobat is normal; the Integrity findings on each pole show whether any page content was changed.`,'','PoleForeman',loc);
+    if (I.wholeFile) add(null,'warn','Integrity',`Every page of ${d.name} was re-created by another program`,'The file was printed or converted to a new PDF, so edits to the reports can’t be detected. Ask for the original PoleForeman export.','','PoleForeman',loc);
+    const hit = d.data.poles.filter(P=>(P.integrity||[]).some(x=>x.sev==='bad')).map(P=>PF2ST[P.id]||P.id);
+    if (hit.length) add(null,'bad','Integrity',`PoleForeman report${hit.length>1?'s':''} for ${hit.join(', ')} show${hit.length>1?'':'s'} signs of editing`,'Changed icons or pages that were re-written after PoleForeman made them. See the Integrity findings on each pole, and ask for the original PoleForeman files before approving.','','PoleForeman',loc);
+  });
 
   /* per pole */
   const dlocs = new Set(STN.map(s=>s.d.dloc).filter(Boolean));
@@ -1070,6 +1171,12 @@ function pfChecks(add){
       const sr = R.summary.find(x=>x.rule===rn);
       if (sr){ [['poleH',h.horz,'Pole H'],['poleV',h.vert,'Pole V'],['framings',m.framing,'Framings'],['guying',m.guy,'Guying']].forEach(([k,v,lab])=>{ if (sr[k]!=null && v!=null && Math.abs(sr[k]-v)>1) add(P,'bad','Report',`Summary page ${lab} (${sr[k]}%) doesn't match the ${rn} detail (${f0(v)}%)`,'',rn); });
         if (sr.temp!=null && h.temp!=null && sr.temp!==h.temp) add(P,'bad','Report',`Summary temperature ${sr.temp}° vs detail ${h.temp}°`,'',rn); }
+      // guy wire, anchor and rod loadings are exactly tension / strength, so a percentage changed by hand won't match
+      // (insulator loadings aren't: PoleForeman adjusts them, so they're left out)
+      const pctChk = (what, load, str, shown) => { if (load==null || !str || shown==null) return; const calc = load/str*100; if (Math.abs(calc-shown) > 1.5) add(P,'bad','Integrity',`${what} shows ${shown}%, but ${f0(load)} lbs on ${f0(str)} lbs is ${f0(calc)}%`,'PoleForeman works this loading out from these two numbers, so one of the three was changed.',rn); };
+      r.anchors.forEach(a=>{ a.wires.forEach(w=>pctChk(`Anchor ${a.n} guy wire`, w.tension, w.strength, w.load));
+        if (a.anchor){ pctChk(`Anchor ${a.n} anchor`, a.anchor.tension, a.anchor.holding, a.anchor.load); pctChk(`Anchor ${a.n} anchor rod`, a.anchor.tension, a.anchor.rodStrength, a.anchor.rodLoad); } });
+      (r.spanGuys||[]).forEach(g=>g.wires.forEach(w=>pctChk(`Span guy ${g.n} wire`, w.tension, w.strength, w.load)));
     });
     // HAG / 250C applicability
     const b = R.rules['250B'];
@@ -1765,7 +1872,7 @@ function renderOverview(){
 function docSummary(d, as){
   const x=d.data||{}; if (d.foreign) return `Different work order (WO ${d._wo.content||d._wo.file})`;
   switch(d.kind){
-    case 'pf': return `${x.poles.length} reports: ${x.poles.map(p=>`${p.id} (${p.R.ruleOrder.join('+')})`).join(', ')}`;
+    case 'pf': { const ed = x.poles.filter(p=>(p.integrity||[]).some(i=>i.sev==='bad')).map(p=>p.id); return `${x.poles.length} reports: ${x.poles.map(p=>`${p.id} (${p.R.ruleOrder.join('+')})`).join(', ')}${ed.length?` · signs of editing: ${ed.join(', ')}`:''}${x.integrity?.wholeFile?' · whole file re-created, edits can’t be checked':''}`; }
     case 'station': return `${x.order.length} stations, ${f2(x.meta.onsite)} on-site hours`;
     case 'ifc': return as==='sketch' ? `sketch on page${(x.sketchPages||[]).length>1?'s':''} ${(x.sketchPages||[x.sketchPage]).join(', ')}` : as==='station' ? `station details, ${x.station.order.length} stations` : `design summary for ${x.order.length} poles${x.sketchPage?`, sketch p. ${x.sketchPage}`:''}${x.station?', station details':''}`;
     case 'sketch': return `${skPagesOf(x.sketch).length>1?`${skPagesOf(x.sketch).length} pages · `:''}${x.sketch.labels.length?`labels ${x.sketch.labels.map(l=>l.id).join(', ')} · `:''}${x.ocr?`${x.ocr.callouts.length} callouts read`:(x.sketch.callouts||[]).some(c=>c.dloc||c.lat)?`${x.sketch.callouts.filter(c=>c.dloc||c.lat).length} callouts in the PDF text`:'text not read yet'}`;
