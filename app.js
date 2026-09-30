@@ -133,7 +133,7 @@ function pfIntegrity(scan, poles, meta, saves){
     const f = (sev, title, detail, pg) => out.push({ sev, title, detail, page: pg });
     // 1. pages re-written by another program
     if (!wholeFile){ const rw = mine.filter(p=>p.tj>=10 && p.tm/p.tj<0.25).map(p=>p.n);
-      if (rw.length) f('bad', `${rw.length===1?'A page':`${rw.length} pages`} of the ${P.id} report ${rw.length===1?'was':'were'} re-written by another program after PoleForeman created ${rw.length===1?'it':'them'}`, `File page${rw.length>1?'s':''} ${rw.join(', ')}. PoleForeman places every piece of text on its own; these pages were saved by a PDF editor, which happens when text or icons are changed. Compare with the original PoleForeman export.`, rw[0]); }
+      if (rw.length) f('warn', `${rw.length===1?'A page':`${rw.length} pages`} of the ${P.id} report ${rw.length===1?'was':'were'} re-written by another program after PoleForeman created ${rw.length===1?'it':'them'}`, `File page${rw.length>1?'s':''} ${rw.join(', ')}. PoleForeman places every piece of text on its own; these pages were saved by a PDF editor, which happens when text or icons are changed. Compare with the original PoleForeman export.`, rw[0]); }
     // 2. icons not where PoleForeman puts them
     const off = [];
     mine.forEach(p=>p.icons.forEach(i=>{ if (i.dx==null || !grid.length) return; const d = Math.min(...grid.map(([s,dx,dy])=>Math.hypot(dx-i.dx, dy-i.dy) + (Math.abs(s-i.s)>0.5 ? 1 : 0)));
@@ -241,7 +241,7 @@ async function handleFiles(files){
   $('#empty').hidden=false; $('#app').hidden=true; $('#fileList').innerHTML='';
   let ok=0; const bad=[];
   for (const f of files.sort((a,b)=>natural(a.name,b.name))){
-    const li=document.createElement('li'); li.innerHTML=`<span>${esc(f.name)}</span><span>Waiting</span>`; $('#fileList').appendChild(li); const st=li.lastChild;
+    const li=document.createElement('li'); li.innerHTML=`<span title="${esc(f.name)}">${esc(f.name)}</span><span>Waiting</span>`; $('#fileList').appendChild(li); const st=li.lastChild;
     if (/\.xlsx$/i.test(f.name)){ st.textContent='Checking spreadsheet…'; let ok=false, what=''; const bytes = await f.arrayBuffer(); try { const W = await scOpen(bytes.slice(0)); if (W.sheets['Design Scorecard']) { ok = await saveTemplate(f); what='Scorecard template saved'; } else { ok = await saveCUList(bytes, f.name); what='Compatible unit list saved'; } } catch(e){} st.textContent = ok ? what : 'Not a scorecard template or CU list'; st.className = ok ? 'g' : 'e'; continue; }
     if (/\.(png|jpe?g|webp)$/i.test(f.name)){ const rec = await readImage(f); const dup = DOCS.findIndex(d=>d.name===rec.name); if (dup>=0){ dbDel(DOCS[dup].id); DOCS.splice(dup,1); } DOCS.push(rec); dbPut(rec); st.textContent=KINDS[rec.kind].n; st.className='g'; ok++; continue; }
     if (!/\.pdf$/i.test(f.name)){ st.textContent='Not a PDF'; st.className='e'; bad.push(f.name); continue; }
@@ -252,7 +252,9 @@ async function handleFiles(files){
       const dup = DOCS.findIndex(d => d.name===rec.name || (single && d.kind===rec.kind));
       if (dup>=0){ dbDel(DOCS[dup].id); PDFC.delete(DOCS[dup].id); DOCS.splice(dup,1); }
       DOCS.push(rec); dbPut(rec);
-      st.textContent = rec.kind==='pf' ? `PoleForeman: ${rec.data.poles.map(p=>p.id).join(', ')}` : KINDS[rec.kind].n;
+      const ids = rec.kind==='pf' ? rec.data.poles.map(p=>p.id) : [];
+      st.textContent = rec.kind==='pf' ? `PoleForeman: ${ids.length>4 ? `${ids.length} poles, ${ids[0]}–${ids[ids.length-1]}` : ids.join(', ')}` : KINDS[rec.kind].n;
+      if (rec.kind==='pf') st.title = ids.join(', ');
       st.className = rec.kind==='unknown' ? 'e' : 'g'; ok++;
     } catch(e){ console.error(e); st.textContent=e.message||'Could not read'; st.className='e'; bad.push(f.name); }
   }
@@ -440,7 +442,8 @@ function rebuild(){
   $('#empty').hidden=true; $('#app').hidden=false; $('#addMore').hidden=$('#clearAll').hidden=false;
   const title = WO?.meta.title || SK?.K.fields.title || PKG.env?.data.meta.name || '';
   const wo = DOMWO || WO?.meta.wo || SK?.K.fields.wo || PKG.ifc?.data.meta.maximo || ST?.meta.wo || '';
-  $('#hTitle').textContent = wo ? `WO ${wo}` : `${STN.length} poles`;
+  const dz = designerOf(), dF = (FACTS||[]).find(f=>f.name==='Designer');
+  $('#hTitle').innerHTML = `${esc(wo ? `WO ${wo}` : `${STN.length} poles`)}${dz ? ` <span class="who">· Designer <b>${esc(dz)}</b>${dF && !dF.ok ? ` <span class="pill warn" title="${esc(dF.vals.map(v=>`${v[0]}: ${v[1]}`).join('\n'))}">differs between documents</span>` : ''}</span>` : ''}`;
   $('#hSub').textContent = [title, `${STN.length} pole${STN.length===1?'':'s'}`, `${DOCS.length} document${DOCS.length===1?'':'s'}`].filter(Boolean).join(' · ');
   renderKpis(); render();
 }
@@ -713,6 +716,16 @@ function runChecks(dupPF){
 }
 
 
+// the designer's name for the header: a real name ("Neomi Bazan") beats a login ("nbazan1"), IFC and job jacket first
+function designerOf(){
+  const ok = d => d && !d.foreign, J = JK?.data;
+  const raw = [ok(PKG.ifc)&&PKG.ifc.data.meta?.designer, ok(PKG.design)&&PKG.design.data.meta?.designer, J?.ocr?.designerName, J?.designer, ok(PKG.env)&&PKG.env.data.meta?.designer,
+    ...(PKG.mapreq||[]).filter(ok).map(d=>(d.data.req||d.data.ocr)?.fields.createdBy), SK && ok(SK.doc) && SK.K.fields.designer, ...(PKG.permitsketch||[]).filter(ok).map(d=>d.data.sketch.fields.designer)].filter(Boolean);
+  const parts = raw.flatMap(v=>String(v).replace(/^\s*TechServ\s*[:\-]\s*/i,'').split(/\s+[-–]\s+|\s*[;,]\s*/)).map(s=>s.trim()).filter(Boolean);
+  const name = parts.find(s=>/^[A-Za-z][A-Za-z.'-]+(\s+[A-Za-z][A-Za-z.'-]+)+$/.test(s)) || parts[0] || '';
+  return name === name.toUpperCase() && /\s/.test(name) ? name.toLowerCase().replace(/\b\w/g, c=>c.toUpperCase()) : name;
+}
+
 /* ---------- helpers for package-level checks ---------- */
 let DOMWO = null;
 function docWO(d){ const x=d.data||{}; let v=null;
@@ -900,6 +913,42 @@ function crossChecks(add){
     if (!r) add(s.id,'warn','CU',`${c.cu} isn't in the compatible unit list`,`Check the spelling. If it's a new CU, update the CU list in Settings (${CUDB.name}).`,'','station details',loc);
     else { const a=String(c.desc||'').toUpperCase().replace(/[^A-Z0-9]/g,''), b=r.d.toUpperCase().replace(/[^A-Z0-9]/g,''); if (a && b && !a.startsWith(b.slice(0,14)) && !b.startsWith(a.slice(0,14))) add(s.id,'info','CU',`${c.cu}: description differs from the CU list`,`Station details: ${c.desc} · CU list: ${r.d}`,'','station details',loc); }
   })); }
+  /* job sketch: the project info box belongs on every page, with the same values */
+  const skPgs = SK?.K.pages?.filter(p=>'info' in p) || [];
+  if (skPgs.length){ const nm = (pg,i) => skPgs.length>1 ? `page ${i+1}` : 'the sketch', F = [['voltage','Primary voltage'],['feeder','Feeder'],['sub','Substation'],['upstream','Upstream device'],['arc','Arc']];
+    skPgs.forEach((pg,i)=>{ const loc={doc:SK.doc.id, page:pg.page};
+      if (!pg.info){ if (pg.hasText) add(null,'warn','Sketch',`Job sketch ${nm(pg,i)} has no project info box`,'Every sketch page should carry the box with primary voltage, feeder, substation, upstream device and arc.','','job sketch',loc); return; }
+      const miss = F.filter(([k])=>!pg.info[k]).map(([,n])=>n); if (miss.length) add(null,'warn','Sketch',`Job sketch info box on ${nm(pg,i)} is missing ${miss.join(', ').toLowerCase()}`,'','','job sketch',loc); });
+    const withBox = skPgs.map((pg,i)=>({pg,i})).filter(x=>x.pg.info);
+    F.forEach(([k,n])=>{ const vals = withBox.filter(x=>x.pg.info[k]); const norm = v => String(v).toUpperCase().replace(/\s+/g,'');
+      if (new Set(vals.map(x=>norm(x.pg.info[k]))).size>1) add(null,'bad','Sketch',`${n} in the job sketch info box differs between pages`, vals.map(x=>`page ${x.i+1}: ${x.pg.info[k]}`).join(' · '),'','job sketch',{doc:SK.doc.id, page:vals[0].pg.page}); }); }
+
+  /* H/C on every station CU: C for tailboard, traffic control and engineering; otherwise 3 on 35 kV class
+     (at least two phases at 34.5 kV or more), transmission underbuild or double circuit, and H for everything else */
+  { const kvRaw = skPgs.find(p=>p.info?.kv)?.info.kv ?? SK?.K.fields.voltage ?? PKG.ifc?.data.meta?.voltage ?? JK?.data.ocr?.voltage;
+    const kv = kvRaw!=null ? parseFloat(String(kvRaw).match(/[\d.]+/)?.[0]) : null;
+    const kvSrc = skPgs.some(p=>p.info?.kv) ? 'sketch info box' : SK?.K.fields.voltage ? 'sketch' : PKG.ifc?.data.meta?.voltage ? 'IFC' : 'job jacket';
+    const isC = c => /^(TAILBOARD|TRAFFIC|FLAG|ENGR)/i.test(c.cu) || /TAILBOARD|TRAFFIC CONTROL|FLAGG|ENGINEERING SERVICES/i.test(c.desc||'');
+    const skPh = new Set((String(SK?.K.fields.phase||'').toUpperCase().match(/[ABC]/g)||[])).size || null;
+    let noKv = false;
+    STN.forEach(s=>{ if (!s.st) return;
+      const r = baseRule(s.pf?.R), prim = r ? r.spans.flatMap(x=>x.wires).filter(w=>/primary/i.test(w.kind)) : [];
+      const phases = new Set(prim.flatMap(w=>w.phases.map(p=>String(p.phase).toUpperCase())).filter(p=>/^[ABC]$/.test(p))).size || skPh;
+      const txt = [s.wo?.notes.join(' '), s.sk?.notes?.join(' '), s.st.cus.map(c=>c.desc).join(' ')].join(' ');
+      const tx = (r && r.spans.some(x=>x.wires.some(w=>/transmission/i.test(w.kind+' '+w.circuitType)))) || /underbuil|transmission/i.test(txt);
+      const dc = (r && r.spans.some(x=>new Set(x.wires.filter(w=>/primary/i.test(w.kind)).map(w=>w.circuit).filter(Boolean)).size>1)) || /double[\s-]*circuit/i.test(txt);
+      const hv = kv!=null && kv>=34.5 && (phases==null || phases>=2);
+      const known = kv!=null || tx || dc, exp3 = hv || tx || dc;
+      const why = exp3 ? [hv&&`${kv} kV${phases?`, ${phases} phases`:''} (${kvSrc})`, tx&&'underbuild on a transmission pole', dc&&'double circuit'].filter(Boolean).join(', ') : `${kv} kV${phases?`, ${phases} phase${phases>1?'s':''}`:''} (${kvSrc})`;
+      const bad = {};
+      s.st.cus.filter(c=>c.hc).forEach(c=>{ const want = isC(c) ? 'C' : known ? (exp3 ? '3' : 'H') : null; if (!want){ noKv = true; return; }
+        if (c.hc!==want) (bad[`${c.hc}|${want}`]=bad[`${c.hc}|${want}`]||[]).push(c); });
+      Object.entries(bad).forEach(([k,cs])=>{ const [got,want] = k.split('|');
+        add(s.id,'bad','Estimate',`${cs.length} CU${cs.length>1?'s':''} on ${s.id} ${cs.length>1?'have':'has'} H/C "${got}" but should be ${want}`, `${want==='C'?'Tailboard, traffic control and engineering CUs are always C.':want==='3'?`3 because of ${why}.`:`H: ${why} isn't 35 kV class, transmission underbuild or double circuit.`} ${cs.map(c=>`${c.cu} (${WFN[c.wf]||c.wf})`).join(', ')}`,'','station details',(PKG.station||PKG.ifc)?{doc:(PKG.station||PKG.ifc).id, page:cs[0].page||s.st.pages[0], find:cs[0].cu}:null); });
+    });
+    if (noKv) add(null,'info','Estimate','H/C wasn’t checked against the line voltage','The primary voltage wasn’t found (it comes from the info box on the job sketch), so only the CUs that are always C were checked.');
+  }
+
   /* project facts */
   const wordNorm = v => String(v||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
   const addrNorm = v => wordNorm(v).split(' ').slice(0,3).join(' ');
@@ -1132,9 +1181,7 @@ function pfChecks(add){
       r.spans.forEach(s=>s.wires.forEach(w=>w.phases.forEach(p=>{ const d=`Span ${s.n}, ${w.kind} ${p.phase}`; L(p.bracketLoad,`Bracket (${p.bracket})`,d); L(p.supportLoad,`Insulator support (${p.support})`,d); L(p.insLoad,`Insulator (${p.insulator})`,d); })));
       r.anchors.forEach(a=>{
         a.wires.forEach((w,i)=>{ const d=`Anchor ${a.n}, guy ${i+1} (${w.size} at ${w.attach} in)`; L(w.load,'Guy wire',d); L(w.insLoad,`Guy insulator (${w.insulator})`,d);
-          if (w.strength && w.tension!=null && w.load!=null && Math.abs(w.tension/w.strength*100-w.load)>1.5) add(P,'bad','Math',`Guy wire %loading doesn't match tension ÷ strength`,`${d}: ${f0(w.tension)} ÷ ${f0(w.strength)} = ${f1(w.tension/w.strength*100)}%, report shows ${w.load}%`,rn);
-          if (w.insStrength && w.tension!=null && w.insLoad!=null && Math.abs(w.tension/w.insStrength*100-w.insLoad)>1.5) add(P,'bad','Math',`Guy insulator %loading doesn't match`,`${d}: ${f0(w.tension)} ÷ ${f0(w.insStrength)} = ${f1(w.tension/w.insStrength*100)}%, report shows ${w.insLoad}%`,rn);
-        });
+          if (w.strength && w.tension!=null && w.load!=null && Math.abs(w.tension/w.strength*100-w.load)>1.5) add(P,'bad','Math',`Guy wire %loading doesn't match tension ÷ strength`,`${d}: ${f0(w.tension)} ÷ ${f0(w.strength)} = ${f1(w.tension/w.strength*100)}%, report shows ${w.load}%`,rn);        });
         if (a.anchor){ const an=a.anchor, d=`Anchor ${a.n} (${an.type}, ${an.rod})`; L(an.load,'Anchor holding',d); L(an.rodLoad,'Anchor rod',d);
           const sum = a.wires.reduce((x,w)=>x+(w.tension||0),0);
           if (a.wires.length && Math.abs(sum-an.tension)>Math.max(25, an.tension*0.01)) add(P,'bad','Math','Anchor tension ≠ sum of its guy wires',`${d}: guys total ${f0(sum)} lbs, anchor shows ${f0(an.tension)} lbs`,rn);
@@ -1147,8 +1194,7 @@ function pfChecks(add){
       (r.spanGuys||[]).forEach(g=>g.wires.forEach((w,i)=>{ const d=`Span guy ${g.n} (${g.length}' at ${g.bearing}°), guy ${i+1} (${w.size} at ${w.attach} in)`; L(w.load,'Span guy wire',d);
         if (w.nearIns && !/^none$/i.test(w.nearIns)) L(w.nearLoad,`Span guy near insulator (${w.nearIns})`,d);
         if (w.farIns && !/^none$/i.test(w.farIns)) L(w.farLoad,`Span guy far insulator (${w.farIns})`,d);
-        if (w.strength && w.tension!=null && w.load!=null && Math.abs(w.tension/w.strength*100-w.load)>1.5) add(P,'bad','Math',`Span guy %loading doesn't match tension ÷ strength`,`${d}: ${f0(w.tension)} ÷ ${f0(w.strength)} = ${f1(w.tension/w.strength*100)}%, report shows ${w.load}%`,rn);
-        [['near',w.nearStr,w.nearLoad],['far',w.farStr,w.farLoad]].forEach(([k,st,ld])=>{ if (st && ld!=null && w.tension!=null && Math.abs(w.tension/st*100-ld)>1.5) add(P,'bad','Math',`Span guy ${k} insulator %loading doesn't match`,`${d}: ${f1(w.tension/st*100)}% vs ${ld}%`,rn); }); }));
+        if (w.strength && w.tension!=null && w.load!=null && Math.abs(w.tension/w.strength*100-w.load)>1.5) add(P,'bad','Math',`Span guy %loading doesn't match tension ÷ strength`,`${d}: ${f0(w.tension)} ÷ ${f0(w.strength)} = ${f1(w.tension/w.strength*100)}%, report shows ${w.load}%`,rn); }));
       // spans
       r.spans.forEach(s=>{ if (!s.wires.length && !s.comms.length) add(P,'warn','Spans',`Span ${s.n} has no conductors or cables`,`${s.length}' at ${s.bearing}°. Leftover span, or wires not assigned?`,rn); });
       // NESC factors
@@ -1171,12 +1217,6 @@ function pfChecks(add){
       const sr = R.summary.find(x=>x.rule===rn);
       if (sr){ [['poleH',h.horz,'Pole H'],['poleV',h.vert,'Pole V'],['framings',m.framing,'Framings'],['guying',m.guy,'Guying']].forEach(([k,v,lab])=>{ if (sr[k]!=null && v!=null && Math.abs(sr[k]-v)>1) add(P,'bad','Report',`Summary page ${lab} (${sr[k]}%) doesn't match the ${rn} detail (${f0(v)}%)`,'',rn); });
         if (sr.temp!=null && h.temp!=null && sr.temp!==h.temp) add(P,'bad','Report',`Summary temperature ${sr.temp}° vs detail ${h.temp}°`,'',rn); }
-      // guy wire, anchor and rod loadings are exactly tension / strength, so a percentage changed by hand won't match
-      // (insulator loadings aren't: PoleForeman adjusts them, so they're left out)
-      const pctChk = (what, load, str, shown) => { if (load==null || !str || shown==null) return; const calc = load/str*100; if (Math.abs(calc-shown) > 1.5) add(P,'bad','Integrity',`${what} shows ${shown}%, but ${f0(load)} lbs on ${f0(str)} lbs is ${f0(calc)}%`,'PoleForeman works this loading out from these two numbers, so one of the three was changed.',rn); };
-      r.anchors.forEach(a=>{ a.wires.forEach(w=>pctChk(`Anchor ${a.n} guy wire`, w.tension, w.strength, w.load));
-        if (a.anchor){ pctChk(`Anchor ${a.n} anchor`, a.anchor.tension, a.anchor.holding, a.anchor.load); pctChk(`Anchor ${a.n} anchor rod`, a.anchor.tension, a.anchor.rodStrength, a.anchor.rodLoad); } });
-      (r.spanGuys||[]).forEach(g=>g.wires.forEach(w=>pctChk(`Span guy ${g.n} wire`, w.tension, w.strength, w.load)));
     });
     // HAG / 250C applicability
     const b = R.rules['250B'];
@@ -1342,7 +1382,8 @@ async function copyTable(id){
 
 function renderCompare(){
   let rows = POLES.map(p=>{ const b=p.R.rules['250B'], c=p.R.rules['250C']; return {p, id:p.id, spec:p.R.poleSpec, rules:p.R.ruleOrder.join('+'), mb:b?metrics(b):{}, mc:c?metrics(c):null, setting:(b||{}).head?.setting, hag:p._hag, spans:(b||p.R.rules[p.R.ruleOrder[0]]).spans.length, anchors:(b||p.R.rules[p.R.ruleOrder[0]]).anchors.length, status:p._status, bad:p._counts.bad, warn:p._counts.warn}; });
-  if (FIL.review) rows=rows.filter(r=>r.status!=='ok');
+  if (FIL.review==='edited'){ const ed=new Set(pfEdited().map(s=>s.pf?.id)); rows=rows.filter(r=>ed.has(r.id)); }
+  else if (FIL.review) rows=rows.filter(r=>r.status!=='ok');
   if (FIL.status) rows=rows.filter(r=>r.status===FIL.status);
   if (FIL.rules) rows=rows.filter(r=>r.rules===FIL.rules);
   const govOf = r => { const items=[['pole',r.mb.horz,'250B pole horiz'],['pole',r.mb.vert,'250B pole vert'],['eq',r.mb.framing,'250B framing'],['eq',r.mb.guy,'250B guy'],['eq',r.mb.anchor,'250B anchor']];
@@ -1825,18 +1866,20 @@ function renderKpis(){ renderHeaderTools();
     [tot!=null?money(tot):'–','Estimate total',PKG.jobcost?'job cost summary':'',''],
     [sp.n?`${sp.c} / ${sp.n}`:'–','Sketch items confirmed',SK?(skCO()?'auto-read + by eye':'confirm by eye'):'no sketch',sp.n&&sp.c===sp.n?'ok':''],
   ];
-  $('#kpis').innerHTML=k.map((x,i)=>`<div class="kpi">${(i===2||i===3)&&x[0]?`<button class="kpib" data-gotoreview="1" title="Show poles that need review">`:''}<div class="v ${x[3]}">${x[0]}</div><div class="l">${x[1]}</div><div class="d">${esc(x[2])}</div>${(i===2||i===3)&&x[0]?'</button>':''}</div>`).join('');
+  k.forEach((x,i)=>{ if ((i===2||i===3) && x[0]) x[4]='data-gotoreview="1" title="Show poles that need review"'; });
+  if (POLES.length){ const ed=pfEdited(), cf=ed.filter(s=>pfEditSev(s)==='bad').length; k.splice(2,0,[ed.length,'PF integrity',ed.length?`${cf} edited · ${ed.length-cf} re-written page`:'no signs of editing',ed.length?(cf?'bad':'warn'):'ok','data-gotab="integrity" title="See the PoleForeman reports that were changed"']); }
+  $('#kpis').innerHTML=k.map(x=>`<div class="kpi">${x[4]?`<button class="kpib" ${x[4]}>`:''}<div class="v ${x[3]}">${x[0]}</div><div class="l">${x[1]}</div><div class="d">${esc(x[2])}</div>${x[4]?'</button>':''}</div>`).join('');
   const nr = STN.filter(s=>s._status!=='ok').length;
   $('#reviewBtn').hidden = false; $('#reviewBtn').textContent = nr ? `Review ${nr} pole${nr>1?'s':''}` : 'No poles need review'; $('#reviewBtn').disabled = !nr;
 }
-const TABS=[['overview','Overview'],['poles','Poles'],['sketch','Sketch review'],['estimate','Estimate'],['wo','Work order'],['scopetab','Scope review'],['permits','Permits'],['devices','DCO & calcs'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
+const TABS=[['overview','Overview'],['poles','Poles'],['integrity','PF integrity'],['sketch','Sketch review'],['estimate','Estimate'],['wo','Work order'],['scopetab','Scope review'],['permits','Permits'],['devices','DCO & calcs'],['compare','PF compare'],['spans','Spans'],['guying','Guying'],['equipment','Equipment'],['issues','Issues'],['docs','Documents'],['settings','Settings']];
 function render(){
   const sp = skProgress();
-  const cnt={poles:STN.length, issues:ISS.filter(i=>i.sev!=='info').length, docs:DOCS.length, sketch: sp.n?`${sp.c}/${sp.n}`:null, guying:POLES.reduce((a,p)=>{ const r=baseRule(p.R); return a+r.anchors.length+(r.spanGuys||[]).length; },0)};
+  const cnt={poles:STN.length, integrity:POLES.length&&pfEdited().length?pfEdited().length:null, issues:ISS.filter(i=>i.sev!=='info').length, docs:DOCS.length, sketch: sp.n?`${sp.c}/${sp.n}`:null, guying:POLES.reduce((a,p)=>{ const r=baseRule(p.R); return a+r.anchors.length+(r.spanGuys||[]).length; },0)};
   $('#tabs').innerHTML=TABS.map(([k,l])=>`<button class="tab" role="tab" data-tab="${k}" aria-selected="${TAB===k}">${l}${cnt[k]!=null?`<span class="n">${cnt[k]}</span>`:''}</button>`).join('');
   const v=$('#view');
   const pfNeed = ['compare','spans','guying','equipment'].includes(TAB) && !POLES.length;
-  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, sketch:renderSketch, estimate:renderEstimate, wo:renderWO, scopetab:renderScope, permits:renderPermits, devices:renderDevices, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
+  v.innerHTML = pfNeed ? `<p class="muted">Add the PoleForeman reports to use this tab.</p>` : ({overview:renderOverview, poles:renderPoles, integrity:renderIntegrity, sketch:renderSketch, estimate:renderEstimate, wo:renderWO, scopetab:renderScope, permits:renderPermits, devices:renderDevices, compare:renderCompare, spans:renderSpans, guying:renderGuying, equipment:renderEquip, issues:renderIssues, docs:renderDocs, settings:renderSettings}[TAB])();
   if (TAB==='sketch') wireSketch();
 }
 $('#tabs').addEventListener('click',e=>{ const b=e.target.closest('[data-tab]'); if(b){ TAB=b.dataset.tab; render(); } });
@@ -1901,14 +1944,30 @@ function docSummary(d, as){
 }
 
 /* poles */
-function reviewToggle(){ const n=STN.filter(s=>s._status!=='ok').length; return `<div class="seg" role="group" aria-label="Which poles"><button data-review="0" aria-pressed="${!FIL.review}">All poles (${STN.length})</button><button data-review="1" aria-pressed="${FIL.review}">Needs review (${n})</button></div>`; }
-const shownSt = () => FIL.review ? STN.filter(s=>s._status!=='ok') : STN;
+function reviewToggle(){ const n=STN.filter(s=>s._status!=='ok').length, e=pfEdited().length; return `<div class="seg" role="group" aria-label="Which poles"><button data-review="0" aria-pressed="${!FIL.review}">All poles (${STN.length})</button><button data-review="1" aria-pressed="${FIL.review===true}">Needs review (${n})</button>${e?`<button data-review="edited" aria-pressed="${FIL.review==='edited'}">PF edits (${e})</button>`:''}</div>`; }
+const shownSt = () => FIL.review==='edited' ? pfEdited() : FIL.review ? STN.filter(s=>s._status!=='ok') : STN;
+// poles whose PoleForeman report shows signs of being changed after PoleForeman made it
+const pfEdited = () => STN.filter(s=>ISS.some(i=>i.pole===s.id && i.cat==='Integrity'));
+const pfEditSev = s => ISS.some(i=>i.pole===s.id && i.cat==='Integrity' && i.sev==='bad') ? 'bad' : 'warn';
+function renderIntegrity(){
+  if (!POLES.length) return `<p class="muted">Add the PoleForeman reports to check them for edits.</p>`;
+  const ed = pfEdited(), conf = ed.filter(s=>pfEditSev(s)==='bad'), fileIss = ISS.filter(i=>i.pole==='Project' && i.cat==='Integrity' && !/show signs of editing/.test(i.title));
+  const old = (PKG.pf||[]).filter(d=>!d.data.integrity);
+  let h = `<div class="viewbar"><h2>PoleForeman integrity</h2>${ed.length?`<button class="btn sm primary" data-showedited="1">Show only these ${ed.length} pole${ed.length>1?'s':''}</button>`:''}<div class="hint">Every page is checked for signs it was changed after PoleForeman created it: pasted, missing or changed status icons, statuses that disagree between pages, and pages re-written by a PDF editor. Loadings that don't match their tension and strength are listed under Issues (Math).</div></div>
+  <div class="kpis" style="margin:0 0 16px"><div class="kpi"><div class="v ${ed.length?(conf.length?'bad':'warn'):'ok'}">${ed.length}</div><div class="l">Reports flagged</div><div class="d">of ${POLES.length} PoleForeman reports</div></div><div class="kpi"><div class="v ${conf.length?'bad':''}">${conf.length}</div><div class="l">Edited</div><div class="d">status icons changed</div></div><div class="kpi"><div class="v ${ed.length-conf.length?'warn':''}">${ed.length-conf.length}</div><div class="l">Re-written pages only</div><div class="d">something changed, check by eye</div></div></div>`;
+  if (old.length) h += `<p class="muted">${old.map(d=>esc(d.name)).join(', ')} ${old.length>1?'were':'was'} loaded before this check existed. Add ${old.length>1?'them':'it'} again to check for edits.</p>`;
+  if (fileIss.length) h += `<div class="issues" style="margin-bottom:14px">${fileIss.map(issHtml).join('')}</div>`;
+  if (!ed.length) return h + `<p>No signs of editing in ${POLES.length} PoleForeman report${POLES.length>1?'s':''}.</p>`;
+  ed.slice().sort((a,b)=>(pfEditSev(a)==='bad'?0:1)-(pfEditSev(b)==='bad'?0:1) || natural(a.id,b.id)).forEach(s=>{ const is = ISS.filter(i=>i.pole===s.id && i.cat==='Integrity').sort((a,b)=>({bad:0,warn:1,info:2}[a.sev]-{bad:0,warn:1,info:2}[b.sev]));
+    h += `<div class="sec"><h3><button class="link" data-pole="${esc(s.id)}">${esc(s.id)}</button> ${pfEditSev(s)==='bad'?'<span class="pill bad">Edited</span>':'<span class="pill warn">Re-written page</span>'} <span class="muted sm">${esc(s.pf?.R.poleSpec||'')} · ${s.pf?.pageNos.length||0} pages</span></h3><div class="issues">${is.map(issHtml).join('')}</div></div>`; });
+  return h;
+}
 function renderPoles(){
   const L = shownSt(); if (!L.find(s=>s.id===CUR)) CUR = L[0]?.id;
   const s = STN.find(x=>x.id===CUR);
   const list = L.map(x=>{ const hb=x.pf?.R.rules['250B']?.head.horz, hc=x.pf?.R.rules['250C']?.head.horz;
     return `<button class="pcard" data-stn="${esc(x.id)}" aria-current="${x.id===CUR}"><span class="dot ${x._status}"></span><b>${esc(x.id)}</b><span class="h">${hb!=null?`<span class="pct ${lv(hb,'pole')}">B ${hb}%</span>`:''}${hc!=null?` · <span class="pct ${lv(hc,'pole')}" style="color:var(--c)">C ${hc}%</span>`:''}</span><span class="spec">${x.d.poleInst?`Replace, ${x.d.instHC?`${x.d.instHC.h}' class ${x.d.instHC.c}`:''}`:esc(x.pf?.R.poleSpec||'Existing pole')}${x._counts.bad?` · ${x._counts.bad} error${x._counts.bad>1?'s':''}`:''}${x._counts.warn?` · ${x._counts.warn} warning${x._counts.warn>1?'s':''}`:''}</span></button>`; }).join('');
-  return `<div class="md"><div><div style="margin-bottom:8px">${reviewToggle()}</div><nav class="plist" aria-label="Poles">${list}${FIL.review&&!L.length?'<p class="muted">No poles need review.</p>':''}</nav></div><div class="detail">${s&&L.length?poleView(s):''}</div></div>`;
+  return `<div class="md"><div><div style="margin-bottom:8px">${reviewToggle()}</div><nav class="plist" aria-label="Poles">${list}${FIL.review&&!L.length?`<p class="muted">${FIL.review==='edited'?'No PoleForeman reports show signs of editing.':'No poles need review.'}</p>`:''}</nav></div><div class="detail">${s&&L.length?poleView(s):''}</div></div>`;
 }
 function poleView(s){
   const L=shownSt(), idx=L.findIndex(x=>x.id===s.id), d=s.d;
@@ -2150,7 +2209,9 @@ $('#view').addEventListener('click', e=>{
   if ((x=t('[data-cuup]'))){ $('#cuFile').click(); return; }
   if ((x=t('[data-cureset]'))){ resetCUList(); return; }
   if ((x=t('[data-nav]'))){ if (x.dataset.nav){ CUR=x.dataset.nav; render(); } return; }
-  if ((x=t('[data-review]'))){ FIL.review = x.dataset.review==='1'; render(); return; }
+  if ((x=t('[data-showedited]'))){ FIL.review='edited'; TAB='poles'; CUR=null; render(); return; }
+  if ((x=t('[data-gotab]'))){ TAB=x.dataset.gotab; render(); return; }
+  if ((x=t('[data-review]'))){ FIL.review = x.dataset.review==='1' ? true : x.dataset.review==='edited' ? 'edited' : false; render(); return; }
   if ((x=t('[data-pages]'))){ const [id,p]=x.dataset.pages.split('|'); openPages(id, p==='all'?null:p.split(',').map(Number)); return; }
   if ((x=t('[data-gosk]'))){ SKCUR=x.dataset.gosk; TAB='sketch'; render(); return; }
   if ((x=t('[data-sk]'))){ SKCUR=x.dataset.sk; render(); return; }
@@ -2255,6 +2316,7 @@ function renderDevices(){
 $('#lbPrev').onclick=()=>{ if(LB.i>0){LB.i--; showPage();} }; $('#lbNext').onclick=()=>{ if(LB.i<LB.list.length-1){LB.i++; showPage();} };
 $('#lbClose').onclick=()=>{ $('#lb').hidden=true; };
 document.addEventListener('keydown', e=>{ if ($('#lb').hidden) return; if (e.key==='Escape') $('#lbClose').click(); if (e.key==='ArrowRight') $('#lbNext').click(); if (e.key==='ArrowLeft') $('#lbPrev').click(); });
+document.addEventListener('click', e=>{ const g=e.target.closest('#kpis [data-gotab]'); if (g){ TAB=g.dataset.gotab; render(); const pn=$('.panel'); if(pn) window.scrollTo({top:pn.offsetTop-60}); } });
 document.addEventListener('click', e=>{ if (e.target.closest('#reviewBtn') || e.target.closest('[data-gotoreview]')){ FIL.review=true; TAB='poles'; CUR=null; render(); const pn=$('.panel'); if(pn) window.scrollTo({top:pn.offsetTop-60}); } });
 let tt; function toast(t){ const el=$('#toast'); el.textContent=t; el.classList.add('show'); clearTimeout(tt); tt=setTimeout(()=>el.classList.remove('show'),2800); }
 window.addEventListener('resize', ()=>{ if (TAB==='sketch' && SKZ) { SKZ.pole=null; wireSketchResize(); } });

@@ -313,7 +313,8 @@ function parseStation(pages) {
       if (/^(TRUCK|FOOT|OT|ST|NONE)(\s+(OT|ST|Y|N))?$/.test(t) && !cur.cus.length) { cur.inacc = c[0]; cur.congested = c[1] || ''; continue; }
       if (c.length >= 5 && CU_WF.test(c[1])) {
         const nums = c.slice(3);
-        const hc = nums.find(x => /^[HC]$/.test(x)) || '';
+        // H/C sits right after the quantity: C, H or 3 (the quantity can be 3 too, so go by position first)
+        const hc = /^[HC3]$/.test(c[4] || '') ? c[4] : (c.slice(4).find(x => /^[HC3]$/.test(x)) || '');
         const qty = pfNum(c[3]), hrs = pfNum(c[c.length - 1]);
         lastCU = { cu: c[0], wf: c[1], desc: c[2], qty, hc, hours: hrs, page: pageNo };
         cur.cus.push(lastCU); continue;
@@ -470,17 +471,26 @@ function parseSketch(pages, pageNos) {
   const tl = [], annCallouts = [];
   ps.forEach(p0 => {
     const dx = (W - p0.w) / 2, dy = top; top += p0.h + SKGAP;
-    K.pages.push({ page: p0.pageNo, x0: dx, y0: dy, w: p0.w, h: p0.h });
+    K.pages.push({ page: p0.pageNo, x0: dx, y0: dy, w: p0.w, h: p0.h, info: sketchInfoBox(p0), hasText: p0.lines.length > 3 || (p0.annots || []).length > 0 });
     const p = { ...p0, lines: p0.lines.map(l => ({ ...l, y: l.y + dy, xs: l.xs.map(x => x + dx), xe: l.xe && l.xe.map(x => x + dx) })),
       annots: (p0.annots || []).map(a => ({ ...a, x: a.x + dx, x0: a.x0 + dx, x1: a.x1 + dx, y: a.y + dy, y0: a.y0 + dy, y1: a.y1 + dy })) };
     sketchPageRead(p, K, map, tl, annCallouts);
   });
   K.w = W; K.h = top - SKGAP;
+  const box = (K.pages.find(x => x.info && x.info.voltage) || {}).info; // an info box drawn as page text rather than a text box
+  if (box) { if (!K.fields.voltage) K.fields.voltage = box.voltage; if (!K.fields.feeder && box.feeder) K.fields.feeder = box.feeder.split(/\s/)[0]; }
   const textCallouts = ocrCallouts(tl).filter(c => !annCallouts.some(a => a.dloc && a.dloc === c.dloc));
   K.callouts = [...annCallouts, ...textCallouts].filter((c, i, a) => a.findIndex(x => x.id === c.id && x.dloc === c.dloc && x.lines.join('|') === c.lines.join('|')) === i);
   annCallouts.forEach(c => c.lines.forEach((t, i) => tl.push({ text: t, x0: c.box.x0, x1: c.box.x1, y0: c.box.y0 + i * 10, y1: c.box.y0 + i * 10 + 9, h: 9 })));
   K.textLines = tl.map(l => ({ t: l.text, x0: l.x0, y0: l.y0, x1: l.x1, y1: l.y1 }));
   return K;
+}
+// the project info box every sketch page should carry: primary voltage, feeder, substation, upstream device, arc
+function sketchInfoBox(p) {
+  const texts = [...(p.annots || []).map(a => String(a.text)), p.lines.flatMap(l => l.cells).join('\n')];
+  const T = texts.find(t => /Primary\s*Voltage/i.test(t)); if (!T) return null;
+  const g = re => { const m = T.match(re); return m ? m[1].trim() : null; };
+  return { voltage: g(/Primary\s*Voltage\s*:\s*([\d.]+\s*kV)/i), kv: pfNum(g(/Primary\s*Voltage\s*:\s*([\d.]+)\s*kV/i)), feeder: g(/Feeder\s*:\s*([^\r\n]+)/i), sub: g(/Substation\s*:\s*([^\r\n]+)/i), upstream: g(/Upstream\s*Device\s*:\s*([^\r\n]+)/i), arc: g(/(?:^|[\r\n])\s*Arc(?:\s*Flash)?\s*:\s*([\d.]+)/i) };
 }
 function sketchPageRead(p, K, map, tl, annCallouts) {
   p.lines.forEach(l => {
@@ -501,9 +511,9 @@ function sketchPageRead(p, K, map, tl, annCallouts) {
   (p.annots || []).forEach(a => { const parts = String(a.text).split(/[\r\n]+/).map(t => t.trim()).filter(Boolean); if (!parts.length || a.x0 == null) return;
     const lh = Math.max(8, Math.min(14, (a.y1 - a.y0) / parts.length)); const al = parts.map((t, i) => ({ text: t, x0: a.x0 + 2, x1: a.x1, y0: a.y0 + i * lh, y1: a.y0 + (i + 1) * lh - 1, h: lh - 1 }));
     const T = parts.join('\n'); let m;
-    if ((m = T.match(/Primary Voltage:\s*([\d.]+\s*kV)/i))) K.fields.voltage = m[1];
-    if ((m = T.match(/Protection Device:\s*(.+)/i))) K.fields.protection = m[1].trim();
-    if ((m = T.match(/Feeder:\s*(\S+)/i))) K.fields.feeder = m[1];
+    if ((m = T.match(/Primary Voltage:\s*([\d.]+\s*kV)/i)) && !K.fields.voltage) K.fields.voltage = m[1];
+    if ((m = T.match(/Protection Device:\s*(.+)/i)) && !K.fields.protection) K.fields.protection = m[1].trim();
+    if ((m = T.match(/Feeder:\s*(\S+)/i)) && !K.fields.feeder) K.fields.feeder = m[1];
     if ((m = T.match(/ARC Flash:\s*([\d.]+)/i)) && !K.fields.arc) K.fields.arc = m[1];
     if (/DLOC/i.test(T) || (/^Lat/im.test(T) && /^Lon/im.test(T))) { const c = ocrCallouts(al)[0]; if (c) { c.box = { x0: a.x0, y0: a.y0, x1: a.x1, y1: a.y1 }; c.fromAnnot = true; annCallouts.push(c); } }
     else al.forEach(l => tl.push(l)); });

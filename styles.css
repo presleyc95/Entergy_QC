@@ -43,12 +43,19 @@ h1,h2,h3,h4{font-family:var(--cond);font-weight:700;margin:0}
 .drop h1{font-size:32px;margin-bottom:8px}
 .drop p{color:var(--muted);margin:0 auto 22px;max-width:56ch}
 .drop .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
-.files{list-style:none;padding:0;margin:16px auto 0;max-width:560px;text-align:left;font-size:14px;max-height:260px;overflow:auto}
-.files li{display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--rule)}
+.drop:has(.files li){max-width:1180px;padding:36px 28px}
+.files{list-style:none;padding:0;margin:18px auto 0;text-align:left;font-size:13px;display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));column-gap:28px}
+.files:empty{display:none}
+.files li{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:4px 0;border-bottom:1px solid var(--rule);min-width:0}
+.files li>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.files li>span:last-child{flex:none;max-width:55%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .files .e{color:var(--bad)}.files .g{color:var(--ok)}
 .head{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;padding:22px 0 6px}
 .head h1{font-size:30px;line-height:1.1}
 .head .sub{color:var(--muted);margin-top:4px}
+.head h1 .who{font-weight:500;color:var(--muted);font-size:22px}
+.head h1 .who b{font-weight:600;color:var(--ink)}
+.head h1 .who .pill{font-size:12px;vertical-align:middle;margin-left:6px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));border:1px solid var(--rule);border-radius:10px;background:var(--surface);margin:16px 0;overflow:hidden}
 .kpi{padding:12px 16px;border-right:1px solid var(--rule)}
 .kpi:last-child{border-right:0}
