@@ -105,12 +105,16 @@ async function pfScanPages(pdf, onStep){
   for (let n=1;n<=pdf.numPages;n++){
     onStep && onStep(`Checking PoleForeman pages for edits, page ${n} of ${pdf.numPages}`);
     const p = await pdf.getPage(n); const [ol, tc] = await Promise.all([p.getOperatorList(), p.getTextContent()]);
+    // work in the page as displayed (y up), so rotated pages (/Rotate 90, content drawn sideways) line up like upright ones
+    const vp = p.getViewport({scale:1}), VH = vp.height, U = pdfjsLib.Util.transform;
     let ctm=[1,0,0,1,0,0], tm=0, tj=0; const st=[], icons=[];
     for (let k=0;k<ol.fnArray.length;k++){ const f=ol.fnArray[k], a=ol.argsArray[k];
-      if (f===O.save) st.push(ctm); else if (f===O.restore) ctm=st.pop()||ctm; else if (f===O.transform) ctm=pdfjsLib.Util.transform(ctm,a);
+      if (f===O.save) st.push(ctm); else if (f===O.restore) ctm=st.pop()||ctm; else if (f===O.transform) ctm=U(ctm,a);
       else if (f===O.setTextMatrix) tm++; else if (f===O.showText || f===O.showSpacedText) tj++;
-      else if (f===O.paintImageXObject && a[1]<=128 && a[2]<=128 && Math.abs(ctm[0])>=6 && Math.abs(ctm[0])<=40){ if (!(a[0] in col)) col[a[0]] = await iconColour(p, a[0]); icons.push({ x:ctm[4], y:ctm[5], s:ctm[0], c:col[a[0]] }); } }
-    const items = tc.items.filter(t=>t.str.trim()).map(t=>({ s:t.str.trim(), f:t.fontName, x:t.transform[4], y:t.transform[5], w:t.width, h:Math.abs(t.transform[3])||t.height||10 }));
+      else if (f===O.paintImageXObject && a[1]<=128 && a[2]<=128){ const M=U(vp.transform,ctm), s=Math.hypot(M[0],M[1]); if (s<6 || s>40) continue;
+        const cx=[M[4],M[4]+M[0],M[4]+M[2],M[4]+M[0]+M[2]], cy=[M[5],M[5]+M[1],M[5]+M[3],M[5]+M[1]+M[3]];
+        if (!(a[0] in col)) col[a[0]] = await iconColour(p, a[0]); icons.push({ x:Math.min(...cx), y:VH-Math.max(...cy), s, c:col[a[0]] }); } }
+    const items = tc.items.filter(t=>t.str.trim()).map(t=>{ const m=U(vp.transform,t.transform); return { s:t.str.trim(), f:t.fontName, x:m[4], y:VH-m[5], w:t.width, h:Math.hypot(m[2],m[3])||t.height||10 }; });
     // each icon belongs to the label just to its right
     icons.forEach(i=>{ const cy=i.y+i.s/2; const t=items.filter(t=>{ const g=t.x-(i.x+i.s); return g>-1 && g<14 && Math.abs((t.y+t.h*0.35)-cy)<i.s*0.8; }).sort((a,b)=>a.x-b.x)[0];
       if (t){ i.t=t.s; i.ti=items.indexOf(t); i.dx=Math.round((t.x-i.x)*100)/100; i.dy=Math.round((t.y-i.y)*100)/100; } });
