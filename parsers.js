@@ -203,6 +203,16 @@ function pfParse(pages) {
       }
     }
   });
+  // the designer's callout box under the 3D view: pole number, then DLOC, LAT and LONG stacked under it
+  for (const { lines, pageNo } of pages) {
+    const cells = lines.flatMap(L => L.cells.map((t, j) => ({ t, x: L.xs[j], y: L.y, nx: L.cells[j + 1] })));
+    const d = cells.find(c => /^DLOC\b/i.test(c.t) && /\d{6,}/.test(c.t + ' ' + (c.nx || ''))); if (!d) continue;
+    const by = (re, up) => cells.filter(c => re.test(c.t) && Math.abs(c.x - d.x) < 25 && (up ? c.y < d.y && d.y - c.y < 30 : c.y > d.y && c.y - d.y < 45)).sort((a, b) => Math.abs(a.y - d.y) - Math.abs(b.y - d.y))[0];
+    const num = c => c ? pfNum(((c.t + ' ' + (c.nx || '')).match(/-?\d{1,3}\.\d+/) || [])[0]) : null;
+    const id = by(/^(P|PL|POLE)\s?-?\d{1,3}[A-Z]?$/i, true);
+    R.callout = { id: id ? id.t.replace(/\s|-/g, '').toUpperCase() : null, dloc: (d.t + ' ' + (d.nx || '')).match(/\d{6,}/)[0], lat: num(by(/^LAT/i)), lon: num(by(/^LON/i)), page: pageNo };
+    break;
+  }
   const first = R.rules[R.ruleOrder[0]];
   if (first) { const h = first.head; R.label = R.label || h.label || ''; R.poleSpec = R.poleSpec || h.poleSpec || ''; R.species = R.species || h.species || ''; R.grade = R.grade || h.grade || ''; R.district = R.district || h.district || ''; R.edition = R.edition || h.edition || ''; }
   return R;
@@ -216,7 +226,7 @@ function docClassify(pages, name) {
   if (has(/Scid:\s*\S+/) && has(/DLOC Number/i)) return 'photos';
   if (has(/Change Order \(DCO\)/)) return 'dco';
   if (has(/Voltage Drop and Flicker Worksheet/)) return 'vd';
-  if (has(/^JOB JACKET\.?(\s|$)/m) || (has(/JOB JACKET/) && has(/ETRLOCALOFFICE|WORKORDER/))) return 'jacket';
+  if (has(/^JOB JACKET\.?(\s|$)/m) || (has(/JOB JACKET/i) && has(/ETRLOCALOFFICE|WORKORDER/))) return 'jacket';
   if (has(/Device ID Generator/)) return 'deviceid';
   if (has(/IFC: Cover Page/) || (has(/Design Summary Table/) && has(/Station Details/))) return 'ifc';
   if (has(/Design Mapping Request Form/)) return 'mapreq';
@@ -721,23 +731,65 @@ function parseVD(pages, name) {
   return V;
 }
 
+/* ================= estimate CU list (Excel export: Station, Work Set, CU Name, Work Function, Quantity) ================= */
+function parseCUSheet(rows) {
+  const hi = rows.slice(0, 5).findIndex(r => r.some(c => /^cu name$/i.test(String(c).trim())) && r.some(c => /^station$/i.test(String(c).trim())));
+  if (hi < 0) return null;
+  const H = rows[hi].map(c => String(c).trim().toLowerCase()), col = n => H.indexOf(n);
+  const ix = { st: col('station'), ws: col('work set'), cu: col('cu name'), desc: col('description'), wf: col('work function'), qty: col('quantity'), hc: col('hot / cold') };
+  if (ix.wf < 0 || ix.qty < 0) return null;
+  const g = (r, k) => ix[k] >= 0 ? String(r[ix[k]] ?? '').trim() : '';
+  const out = rows.slice(hi + 1).filter(r => g(r, 'cu') && g(r, 'st')).map(r => ({ station: g(r, 'st'), ws: g(r, 'ws'), cu: g(r, 'cu'), desc: g(r, 'desc'), wf: g(r, 'wf'), qty: pfNum(g(r, 'qty')), hc: g(r, 'hc') }));
+  return { rows: out, stations: [...new Set(out.map(r => r.station))] };
+}
+
+/* ================= field KMZ / KML (placemarks with a DLOC table in the description) ================= */
+function parseKML(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/xml'), tag = (el, n) => el.getElementsByTagName(n)[0]?.textContent?.trim() || '';
+  const marks = [...doc.getElementsByTagName('Placemark')].map(p => {
+    const fields = {}, desc = tag(p, 'description');
+    if (/<t[dh]/i.test(desc)) new DOMParser().parseFromString(desc, 'text/html').querySelectorAll('tr').forEach(tr => { const c = [...tr.children].map(td => td.textContent.trim()); if (c.length >= 2 && c[0]) fields[c[0]] = c[1]; });
+    const [lon, lat] = tag(p, 'coordinates').split(/[\s]+/)[0].split(',').map(Number);
+    const dloc = fields['DLOC Number'] || (desc.match(/DLOC[^0-9]{0,20}(\d{9,11})/i) || [])[1] || null;
+    return { name: tag(p, 'name'), dloc, lat: Number.isFinite(lat) ? lat : null, lon: Number.isFinite(lon) ? lon : null, point: !!p.getElementsByTagName('Point')[0], fields };
+  });
+  return { name: tag(doc, 'name'), marks };
+}
+
 /* ================= Job jacket ================= */
+// Maximo tables: values are right-aligned under their headers, and the columns differ between job jacket layouts,
+// so each value goes to the header column it overlaps most. Rows wrap onto following lines until the next section.
+function jacketTable(lines, hi) {
+  const H = lines[hi], end = (L, j) => (L.xe || [])[j] ?? L.xs[j] + L.cells[j].length * 5;
+  const cols = H.cells.map((name, j) => ({ name, hi: end(H, j) }));
+  cols.forEach((c, j) => { c.lo = j ? cols[j - 1].hi : -1e9; }); cols[cols.length - 1].hi += 15;
+  const row = {}; let lastY = H.y;
+  for (let k = hi + 1; k < lines.length; k++) {
+    const L = lines[k]; if (/^[A-Z]{6,}$/.test(L.text) || L.y - lastY > 20) break; lastY = L.y;
+    L.cells.forEach((v, j) => { const x0 = L.xs[j], x1 = end(L, j); let best = null, ov = 0;
+      cols.forEach(c => { const o = Math.min(x1, c.hi) - Math.max(x0, c.lo); if (o > ov) { ov = o; best = c; } });
+      if (best) row[best.name] = row[best.name] ? `${row[best.name]} ${v}` : v; });
+  }
+  return row;
+}
 function parseJacket(pages) {
   const J = { wo: null };
   const p = pages[0]; if (!p) return J;
-  p.lines.forEach((L, li) => {
-    const c = L.cells;
-    if (/^\d{7,}$/.test(c[0]) && c.length >= 6 && !J.wo) {
-      J.wo = c[0]; J.workType = c[1]; J.subType = c[2]; J.designer = c[3];
-      const di = c.findIndex(x => /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(x)); if (di >= 0) J.targetFinish = c[di];
-      const oi = c.findIndex((x, i) => i > di && /^\d{4}$/.test(x)); if (oi >= 0) { J.office = c[oi]; J.address = c[oi + 1]; J.city = c[oi + 2]; J.state = c[oi + 3]; J.kit = c[oi + 4]; }
-    }
-    if (c[0] === 'Local Office Name') { const n = p.lines[li + 1]; if (n) { J.officeName = n.cells[0]; J.network = n.cells[1]; J.networkCode = n.cells[2]; J.region = n.cells[3]; } }
-  });
+  const date = v => (String(v || '').match(/\d{1,2}\/\d{1,2}\/\d{2,4}/) || [])[0];
+  const hi = p.lines.findIndex(L => L.cells.includes('Designer') && L.cells.some(c => /^Work Order/.test(c)));
+  if (hi >= 0) { const r = jacketTable(p.lines, hi);
+    J.wo = ((r['Work Order'] || r['Work Order #'] || '').match(/\d{7,}/) || [])[0] || null;
+    J.workType = r['Work Type']; J.subType = r['Type']; J.designer = r['Designer']; J.targetFinish = date(r['Target Finish']);
+    J.office = r['Code'] || r['#']; J.address = r['Street Address']; J.city = r['City']; J.state = r['State'];
+    J.kit = r['Kit Materials']; J.kitNotes = r['Kit Notes']; J.description = r['Description']; J.commitCol = date(r['Commit Date']); }
+  const oi = p.lines.findIndex(L => L.text === 'ETRLOCALOFFICE');
+  if (oi >= 0 && p.lines[oi + 1]) { const r = jacketTable(p.lines, oi + 1);
+    J.officeName = r['Local Office Name'] || r['Local Office']; J.network = r['Network Name']; J.networkCode = r['Network Code']; J.region = r['Region']; }
   pages.forEach(pp => pp.lines.forEach(L => { let m = L.text.match(/workorderid\s*=\s*(\d+)/); if (m) J.workorderid = m[1];
-    if ((m = L.text.match(/Commit Date:\s*([\d\/]+)/i))) J.commit = m[1];
-    if ((m = L.text.match(/^JOB JACKET\.?\s+(\S.*)$/))) J.title = m[1].trim();
+    if ((m = L.text.match(/Commit(?: Date)?:\s*([\d\/]+)/i))) J.commit = m[1];
+    if ((m = L.text.match(/^JOB JACKET\.?\s+(\S.*)$/i))) J.title = m[1].trim();
     if (L.cells.some(c => /^(OH|UG)$/.test(c))) J.ohug = L.cells.find(c => /^(OH|UG)$/.test(c)); }));
+  J.commit = J.commit || J.commitCol;
   return J;
 }
 function parseJacketOCR(lines) {

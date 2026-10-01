@@ -19,12 +19,12 @@
   <button class="btn" id="clearAll" hidden>Start over</button>
   <button class="iconbtn" id="themeBtn" title="Switch light / dark" aria-label="Switch light or dark theme"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
 </div></header>
-<input type="file" id="file" accept="application/pdf,.pdf,.xlsx" multiple hidden><input type="file" id="tplFile" accept=".xlsx" hidden><input type="file" id="cuFile" accept=".xlsx" hidden>
+<input type="file" id="file" accept="application/pdf,.pdf,.xlsx,.kmz,.kml" multiple hidden><input type="file" id="tplFile" accept=".xlsx" hidden><input type="file" id="cuFile" accept=".xlsx" hidden>
 
 <section class="wrap" id="empty">
   <div class="drop" id="drop">
     <h1>Drop a design package here</h1>
-    <p>Add every PDF for a work order: PoleForeman reports (one combined file is fine), station details, job sketch, work order details, IFC package, estimate summaries, 811 and NJUNS tickets, DCO forms, voltage drop and flicker worksheets, device ID screenshots, job jacket, environmental checklist, JHA, photos and vicinity map. Each file is identified from its contents and tied back to its pole. Nothing leaves your browser.</p>
+    <p>Add every PDF for a work order: PoleForeman reports (one combined file is fine), station details, job sketch, work order details, IFC package, estimate summaries, 811 and NJUNS tickets, DCO forms, voltage drop and flicker worksheets, device ID screenshots, job jacket, environmental checklist, JHA, photos and vicinity map, plus the estimate CU list (Excel) and field KMZ. Each file is identified from its contents and tied back to its pole. Nothing leaves your browser.</p>
     <div class="row"><button class="btn primary" id="pick">Choose PDFs</button><button class="btn" id="restore" hidden>Reopen last package</button></div>
     <ul class="files" id="fileList"></ul>
   </div>

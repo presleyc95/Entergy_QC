@@ -35,7 +35,7 @@ let FIL = {status:'', rules:'', q:'', review:false, sev:'', cat:''};
 const KINDS = {
   pf:{n:'PoleForeman reports', need:true}, station:{n:'Station Details & Job Instructions', need:true}, ifc:{n:'IFC package (not checked)'}, design:{n:'Design summary'}, sketch:{n:'Job sketch', need:true}, permitsketch:{n:'Permit sketch'}, mapreq:{n:'Mapping request'},
   wo:{n:'Work Order Details', need:true}, jobcost:{n:'Job Cost Summary'}, costdist:{n:'Cost Distribution Summary'}, labor:{n:'Labor Summary'}, material:{n:'Material Summary'},
-  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, dco:{n:'DCO form'}, vd:{n:'Voltage drop / flicker worksheet'}, jacket:{n:'Job jacket'}, deviceid:{n:'Device ID generator'}, inspection:{n:'Inspection sheet'}, scopeimg:{n:'Scope image'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, unknown:{n:'Not recognized'}
+  t811:{n:'811 ticket'}, njuns:{n:'NJUNS ticket'}, dco:{n:'DCO form'}, vd:{n:'Voltage drop / flicker worksheet'}, jacket:{n:'Job jacket'}, deviceid:{n:'Device ID generator'}, inspection:{n:'Inspection sheet'}, scopeimg:{n:'Scope image'}, env:{n:'Environmental Checklist'}, jha:{n:'Job Hazard Analysis'}, photos:{n:'Photos'}, vicinity:{n:'Vicinity map'}, cus:{n:'Estimate CU list (Excel)'}, kmz:{n:'Field KMZ'}, unknown:{n:'Not recognized'}
 };
 
 /* ---------- pdf helpers ---------- */
@@ -179,6 +179,20 @@ function pfIntegrity(scan, poles, meta, saves){
 
 /* ---------- reading a file ---------- */
 async function readImage(file){ const url = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); const req = /mapping.?request|permit.?request/i.test(file.name.replace(/_/g,' ')); return { id:'d'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), name:file.name, kind:req?'mapreq':'scopeimg', pages:1, added:Date.now(), bytes:null, data: req ? { img:url, permit:permitOf(file.name) } : { img:url } }; }
+const newRec = (file, kind, data) => ({ id:'d'+Date.now().toString(36)+Math.random().toString(36).slice(2,7), name:file.name, kind, pages:1, added:Date.now(), bytes:null, data });
+// the estimate's CU list exported to Excel; null when the sheet isn't one
+async function readCUSheet(file, bytes){
+  const X = await xlsxLib(), wb = X.read(new Uint8Array(bytes), {type:'array'});
+  for (const n of wb.SheetNames){ const C = parseCUSheet(X.utils.sheet_to_json(wb.Sheets[n], {header:1, defval:''})); if (C && C.rows.length) return newRec(file, 'cus', C); }
+  return null;
+}
+async function readKMZ(file){
+  const bytes = new Uint8Array(await file.arrayBuffer()); let text;
+  if (/\.kml$/i.test(file.name)) text = new TextDecoder().decode(bytes);
+  else { const X = await xlsxLib(), z = X.CFB.read(bytes, {type:'array'}); const i = z.FullPaths.findIndex(p=>/\.kml$/i.test(p)); if (i<0) throw new Error('No KML inside this KMZ'); text = new TextDecoder().decode(z.FileIndex[i].content); }
+  const K = parseKML(text); if (!K.marks.length) throw new Error('No placemarks in this file');
+  return newRec(file, 'kmz', K);
+}
 async function readDoc(file, onStep){
   if (!window.pdfjsLib) throw new Error('The PDF reader library did not load. Check your connection and reload.');
   const bytes = await file.arrayBuffer();
@@ -246,7 +260,11 @@ async function handleFiles(files){
   let ok=0; const bad=[];
   for (const f of files.sort((a,b)=>natural(a.name,b.name))){
     const li=document.createElement('li'); li.innerHTML=`<span title="${esc(f.name)}">${esc(f.name)}</span><span>Waiting</span>`; $('#fileList').appendChild(li); const st=li.lastChild;
-    if (/\.xlsx$/i.test(f.name)){ st.textContent='Checking spreadsheet…'; let ok=false, what=''; const bytes = await f.arrayBuffer(); try { const W = await scOpen(bytes.slice(0)); if (W.sheets['Design Scorecard']) { ok = await saveTemplate(f); what='Scorecard template saved'; } else { ok = await saveCUList(bytes, f.name); what='Compatible unit list saved'; } } catch(e){} st.textContent = ok ? what : 'Not a scorecard template or CU list'; st.className = ok ? 'g' : 'e'; continue; }
+    const keep = rec => { const dup = DOCS.findIndex(d=>d.name===rec.name || d.kind===rec.kind); if (dup>=0){ dbDel(DOCS[dup].id); DOCS.splice(dup,1); } DOCS.push(rec); dbPut(rec); st.textContent=KINDS[rec.kind].n; st.className='g'; ok++; };
+    if (/\.(kmz|kml)$/i.test(f.name)){ st.textContent='Reading KMZ…'; try { keep(await readKMZ(f)); } catch(e){ console.error(e); st.textContent=e.message||'Could not read'; st.className='e'; bad.push(f.name); } continue; }
+    if (/\.xlsx$/i.test(f.name)){ st.textContent='Checking spreadsheet…'; const bytes = await f.arrayBuffer();
+      try { const rec = await readCUSheet(f, bytes.slice(0)); if (rec){ keep(rec); continue; } } catch(e){ console.warn(e); }
+      let ok=false, what=''; try { const W = await scOpen(bytes.slice(0)); if (W.sheets['Design Scorecard']) { ok = await saveTemplate(f); what='Scorecard template saved'; } else { ok = await saveCUList(bytes, f.name); what='Compatible unit list saved'; } } catch(e){} st.textContent = ok ? what : 'Not a scorecard template or CU list'; st.className = ok ? 'g' : 'e'; continue; }
     if (/\.(png|jpe?g|webp)$/i.test(f.name)){ const rec = await readImage(f); const dup = DOCS.findIndex(d=>d.name===rec.name); if (dup>=0){ dbDel(DOCS[dup].id); DOCS.splice(dup,1); } DOCS.push(rec); dbPut(rec); st.textContent=KINDS[rec.kind].n; st.className='g'; ok++; continue; }
     if (!/\.pdf$/i.test(f.name)){ st.textContent='Not a PDF'; st.className='e'; bad.push(f.name); continue; }
     try {
@@ -266,7 +284,7 @@ async function handleFiles(files){
 }
 const drop=$('#drop');
 $('#pick').onclick=()=>$('#file').click(); $('#addMore').onclick=()=>$('#file').click();
-$('#file').setAttribute('accept','application/pdf,.pdf,.xlsx,.png,.jpg,.jpeg,.webp'); $('#file').onchange=e=>{ const fs=[...e.target.files]; e.target.value=''; handleFiles(fs); };
+$('#file').setAttribute('accept','application/pdf,.pdf,.xlsx,.kmz,.kml,.png,.jpg,.jpeg,.webp'); $('#file').onchange=e=>{ const fs=[...e.target.files]; e.target.value=''; handleFiles(fs); };
 ['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault(); drop.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault(); if(ev==='drop'||e.target===document.documentElement) drop.classList.remove('over');}));
 document.addEventListener('drop',e=>{ const fs=e.dataTransfer?.files; if(fs&&fs.length) handleFiles(fs); });
@@ -460,8 +478,13 @@ function buildStations(){
   const byKey = (obj) => { const o={}; Object.keys(obj||{}).forEach(k=>{ o[nkey(k)]=obj[k]; }); return o; };
   const stK=byKey(ST?.stations), siK=byKey(ifcSt?.stations), woK=byKey(WO?.notes), ifK=byKey(PKG.ifc?.data.rows);
   map.forEach(s=>{ s.st = stK[s.key] || null; s.stIfc = ifcSt ? siK[s.key]||null : null; s.wo = woK[s.key]||null; s.ifc = ifK[s.key]||null; });
-  // PoleForeman: matched by label only (PoleForeman coordinates aren't reliable)
-  POLES.forEach(P=>{ const s=map.get(nkey(P.id)); if (s && !s.pf) s.pf=P; else { const n=get(P.id); if (!n.pf) n.pf=P; } });
+  // PoleForeman: matched by label (PoleForeman coordinates aren't reliable), unless the designer's callout box
+  // (pole number and DLOC) points at a different design pole: then the label is the mistake
+  const dlocOf = s => s.wo?.dloc || s.ifc?.dloc || null;
+  POLES.forEach(P=>{ const c=P.R.callout, sL=map.get(nkey(P.id));
+    const sD = c?.dloc ? [...map.values()].find(x=>dlocOf(x)===c.dloc) : null, sC = c?.id ? map.get(nkey(c.id)) : null;
+    let s = sL && (!c || sL===sC || sL===sD || (!sD && !sC)) ? sL : sD || sC || sL;
+    if (s && !s.pf){ s.pf=P; if (s!==sL) s.pfBy=c; } else { const n=get(P.id); if (!n.pf) n.pf=P; } });
   (SK?.K.labels||[]).forEach(l=>{ const s=map.get(nkey(l.id)) || get(l.id); s.skLabel=l; });
   map.forEach(s=>{ s.names=[]; if (ST) Object.keys(ST.stations).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['station details',k]); }); if (WO?.notes) Object.keys(WO.notes).forEach(k=>{ if(nkey(k)===s.key && !WO.notes[k].heading) s.names.push(['WO notes',k]); }); if (PKG.ifc) Object.keys(PKG.ifc.data.rows).forEach(k=>{ if(nkey(k)===s.key) s.names.push(['IFC design table',k]); }); if (s.pf) s.names.push(['PoleForeman report',s.pf.id]); if (s.skLabel) s.names.push(['job sketch',s.skLabel.id]); });
   (skCO()?.callouts||[]).forEach(c=>{ let s = c.id && map.get(nkey(c.id)); if (!s) s=[...map.values()].find(x=>(x.wo?.dloc||x.ifc?.dloc)===c.dloc); if (s) s.sk=c; });
@@ -474,6 +497,8 @@ function buildStations(){
   if (ph.length && !ph.some(p=>p.ocr && p.ocr.id)) { const main = all.filter(s=>s.st||s.wo||s.ifc); if (ph.length===main.length) main.forEach((s,i)=>{ if(!s.ph){ s.ph=ph[i]; s.phByOrder=true; } }); }
   // NJUNS assets
   (PKG.njuns||[]).forEach(d=>d.data.assets.forEach(a=>{ let s=all.find(x=>(x.wo?.dloc||x.ifc?.dloc)===a.pole); if(!s) s=all.find(x=>{ const dd=distFt(x.wo?.lat??x.ifc?.lat, x.wo?.lon??x.ifc?.lon, a.lat, a.lon); return dd!=null && dd<30; }); if (s) (s.nj=s.nj||[]).push({a, doc:d}); }));
+  // field KMZ placemarks: by name, then DLOC
+  (PKG.kmz && !PKG.kmz.foreign ? PKG.kmz.data.marks : []).filter(m=>m.point).forEach(m=>{ const s = (m.name && map.get(nkey(m.name))) || (m.dloc && all.find(x=>dlocOf(x)===m.dloc)); if (s && !s.kmz) s.kmz = m; });
   all.forEach(s=>{
     const cus = s.st?.cus || [];
     const R = s.pf?.R, b = baseRule(R);
@@ -794,6 +819,29 @@ function permitPole(add, where, loc, p){
   else if (p.repl===false && s.d.repl && p.text) add(s.id,'warn','Permit',`${s.id} is replaced, but the ${where} scope doesn't say so`, p.text,'',where,loc);
   return out;
 }
+/* ---------- estimate CU list (Excel) against the station details ---------- */
+function cuSheetChecks(add){
+  const X = PKG.cus; if (!X || X.foreign || !ST) return;
+  const key = (st,cu,wf) => `${nkey(st)}|${cu}|${wf}`, xs = {}, ss = {}, lbl = {};
+  X.data.rows.forEach(r=>{ const k=key(r.station,r.cu,r.wf); xs[k]=(xs[k]||0)+(r.qty||0); lbl[k]=[canon(r.station),r.cu,r.wf]; });
+  ST.order.forEach(id=>ST.stations[id].cus.forEach(c=>{ const k=key(id,c.cu,c.wf); ss[k]=(ss[k]||0)+(c.qty||0); lbl[k]=lbl[k]||[canon(id),c.cu,c.wf]; }));
+  const by = {};
+  Object.keys(lbl).forEach(k=>{ const [st,cu,wf]=lbl[k], a=xs[k], b=ss[k]; let m=null;
+    if (b==null) m=`${cu} (${wf}) × ${a} is in the spreadsheet only`;
+    else if (a==null) m=`${cu} (${wf}) × ${b} is in the station details only`;
+    else if (Math.abs(a-b)>=1) m=`${cu} (${wf}): ${a} in the spreadsheet, ${b} in the station details`; // the station details round quantities
+    if (m) (by[st]=by[st]||[]).push(m); });
+  Object.entries(by).forEach(([st,ms])=>add(STN.some(s=>s.id===st)?st:null,'bad','Estimate',`The CU spreadsheet and the station details don't agree for ${st}`, ms.join(' · ')+'. Both come from the same estimate, so one of them is out of date.','','CU list (Excel)',null));
+}
+/* ---------- field KMZ against the design ---------- */
+function kmzChecks(add){
+  const K = PKG.kmz; if (!K || K.foreign || !STN.length) return;
+  // placemarks are tied to poles in buildStations; their DLOC and location are compared with the others in the pole checks
+  const where = 'field KMZ';
+  K.data.marks.filter(m=>m.point && !STN.some(s=>s.kmz===m)).forEach(m=>add(null,'warn','KMZ',`The ${where} has ${m.name||m.dloc}, which isn't in the design`, m.dloc?`DLOC ${m.dloc}`:'', '', where, null));
+  const miss = STN.filter(s=>(s.st||s.wo||s.ifc) && !s.kmz).map(s=>s.id);
+  if (miss.length) add(null,'warn','KMZ',`${miss.length===1?'A pole is':`${miss.length} poles are`} missing from the ${where}`, miss.join(', '), '', where, null);
+}
 function permitChecks(add, wordNorm){
   PERMIT = { reqs: [], sketches: [] };
   const sketchName = d => `${d.data.permit||'permit'} sketch`;
@@ -897,13 +945,16 @@ function crossChecks(add){
     if (!s.wo && WO && (s.st||s.pf)) add(id,'warn','Scope',`${id} has no note in the WO log`,'','','WO notes');
     /* locations */
     const pfh = baseRule(s.pf?.R)?.head;
-    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),skCO()?.text?'bad':'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
+    const pco = s.pf?.R.callout;
+    const locs = [['WO notes',s.wo?.lat,s.wo?.lon,'bad'],['PoleForeman callout',pco?.lat,pco?.lon,'bad'],['field KMZ',s.kmz?.lat,s.kmz?.lon,'bad'],['sketch callout',pfNum(s.sk?.lat),pfNum(s.sk?.lon),skCO()?.text?'bad':'warn'],['photo label',pfNum(s.ph?.ocr?.lat),pfNum(s.ph?.ocr?.lon),'warn'],['NJUNS asset',s.nj?.[0]?.a.lat,s.nj?.[0]?.a.lon,'bad']].filter(x=>x[1]!=null&&x[2]!=null);
     s._locs = locs;
     if (locs.length>1){ const [rn,rla,rlo]=locs[0]; locs.slice(1).forEach(([n,la,lo,sev])=>{ const dd=distFt(rla,rlo,la,lo); if (dd>S.coordFt) add(id, sev, 'Location', `${n[0].toUpperCase()+n.slice(1)} location is ${dd>5280?f1(dd/5280)+' miles':f0(dd)+' ft'} from the ${rn}`, `${rn}: ${rla}, ${rlo} · ${n}: ${la}, ${lo}`, '', n); }); }
-    const dl = [['WO notes',s.wo?.dloc,'bad'],['sketch callout',s.sk?.dloc,skCO()?.text?'bad':'warn'],['photo label',s.ph?.ocr?.dloc,'warn'],['NJUNS asset',s.nj?.[0]?.a.pole,'bad']].filter(x=>x[1]);
+    const dl = [['WO notes',s.wo?.dloc,'bad'],['PoleForeman callout',pco?.dloc,'bad'],['field KMZ',s.kmz?.dloc,'bad'],['sketch callout',s.sk?.dloc,skCO()?.text?'bad':'warn'],['photo label',s.ph?.ocr?.dloc,'warn'],['NJUNS asset',s.nj?.[0]?.a.pole,'bad']].filter(x=>x[1]);
     s._dlocs = dl;
     if (dl.length>1) dl.slice(1).forEach(([n,v,sev])=>{ if (v!==dl[0][1]) add(id, sev, 'Location', `DLOC on the ${n} (${v}) doesn't match the ${dl[0][0]} (${dl[0][1]})`, '', '', n); });
-    const nm = [...(s.names||[])]; if (s.sk?.id) nm.push(['sketch callout', s.sk.id]); if (s.ph?.ocr?.id && s.ph.ocr.src!=='text') nm.push(['photo label', s.ph.ocr.id]);
+    const nm = (s.names||[]).filter(([src])=>!(s.pfBy && src==='PoleForeman report')); if (s.sk?.id) nm.push(['sketch callout', s.sk.id]);
+    if (pco?.id && !s.pfBy) nm.push(['PoleForeman callout', pco.id]);
+    if (s.pfBy) add(id,'bad','Naming',`PoleForeman report is labeled ${s.pf.R.label||s.pf.id}, but its callout box says ${s.pfBy.id||'DLOC '+s.pfBy.dloc}`,`Matched to ${id} by the callout box (DLOC ${s.pfBy.dloc}). Fix the pole label in PoleForeman and export the report again.`,'','PoleForeman',{doc:s.pf.docId,page:s.pfBy.page}); if (s.ph?.ocr?.id && s.ph.ocr.src!=='text') nm.push(['photo label', s.ph.ocr.id]);
     nm.forEach(([src,raw])=>{ if (raw && raw!==s.id) add(id,'warn','Naming',`The ${src} calls this pole "${raw}" instead of "${s.id}"`,'Matched as the same pole. Use one naming convention across the package.','',src); });
     if (SK && SK.K.labels.length && !s.skLabel && (s.st||s.wo)) add(id,'warn','Sketch',`${id} label not found on the job sketch`,'','','job sketch');
     if (skCO() && !s.sk && (s.st||s.wo)) add(id,'info','Sketch',`No callout box found for ${id} on the sketch`,'Text reading looks for a box starting with the pole label and DLOC. Check the Sketch review tab.','','job sketch');
@@ -985,7 +1036,7 @@ function crossChecks(add){
     return {name, vals:v, odd, ok: !odd.length};
   });
   FACTS.forEach(f=>{ if (!f.ok){ const o=f.odd[0]; add(null, ['Designer','Target finish','Voltage'].includes(f.name)?'warn':'bad', 'Project', `${f.name} doesn't match across documents`, f.vals.map(v=>`${v[0]}: ${v[1]}`).join(' · '), '', o[0], docLoc(o[2], o[3])); } });
-  permitChecks(add, wordNorm);
+  permitChecks(add, wordNorm); cuSheetChecks(add); kmzChecks(add);
   designSummaryChecks(add, wordNorm);
   // ZIP codes in addresses
   const zips = FACTS.find(f=>f.name==='Address')?.vals.map(v=>[v, (String(v[1]).match(/\b(\d{3,6})\s*$/)||[])[1]]).filter(x=>x[1]) || [];
@@ -1891,7 +1942,7 @@ const cellHtml = c => { if (!c) return '<td class="sc"></td>'; const ic = {ok:'�
 
 /* overview */
 function renderOverview(){
-  const kinds = Object.entries(KINDS).filter(([k])=>!['unknown','ifc','inspection','scopeimg','design','permitsketch','mapreq'].includes(k) || DOCS.some(d=>d.kind===k));
+  const kinds = Object.entries(KINDS).filter(([k])=>!['unknown','ifc','inspection','scopeimg','design','permitsketch','mapreq','cus','kmz'].includes(k) || DOCS.some(d=>d.kind===k));
   const pk = kinds.map(([k,v])=>{ const ds = DOCS.filter(d=>d.kind===k || (k==='sketch' && d.kind==='ifc' && d.data.sketchPage && !PKG.sketch) || (k==='station' && d.kind==='ifc' && d.data.station && !PKG.station));
     const via = ds.length && ds[0].kind!==k ? ' (from IFC)' : '';
     const sum = ds.map(d=>docSummary(d, k)).filter(Boolean).join(' · ');
@@ -1943,6 +1994,8 @@ function docSummary(d, as){
     case 'permitsketch': { const n=sketchCallouts(d).length; return `${x.permit||'Permit'} sketch · ${n?`${n} callout${n===1?'':'s'}: ${sketchCallouts(d).map(c=>c.id).filter(Boolean).join(', ')}`:x.ocr?'no callouts read':'text not read yet'}`; }
     case 'mapreq': { const R=x.req||x.ocr; if (!R) return `${x.permit||''} request · text not read yet`.trim(); return `${R.fields.type||x.permit||'request'} · ${R.poles.length} pole${R.poles.length===1?'':'s'}${R.poles.length?`: ${R.poles.map(p=>p.id).join(', ')}`:''}${x.ocr?' · read from image':''}`; }
     case 'deviceid': return `${x.ids.map(i=>i.id).join(', ')} for WO ${x.wo}`;
+    case 'cus': return `${x.rows.length} CU lines for ${x.stations.length} station${x.stations.length===1?'':'s'}`;
+    case 'kmz': { const ns=x.marks.map(m=>m.name).filter(Boolean); return `${x.marks.length} placemark${x.marks.length===1?'':'s'}${ns.length?`: ${ns.length>6?`${ns[0]}–${ns[ns.length-1]}`:ns.join(', ')}`:''}`; }
   }
   return '';
 }
@@ -1973,6 +2026,16 @@ function renderPoles(){
     return `<button class="pcard" data-stn="${esc(x.id)}" aria-current="${x.id===CUR}"><span class="dot ${x._status}"></span><b>${esc(x.id)}</b><span class="h">${hb!=null?`<span class="pct ${lv(hb,'pole')}">B ${hb}%</span>`:''}${hc!=null?` · <span class="pct ${lv(hc,'pole')}" style="color:var(--c)">C ${hc}%</span>`:''}</span><span class="spec">${x.d.poleInst?`Replace, ${x.d.instHC?`${x.d.instHC.h}' class ${x.d.instHC.c}`:''}`:esc(x.pf?.R.poleSpec||'Existing pole')}${x._counts.bad?` · ${x._counts.bad} error${x._counts.bad>1?'s':''}`:''}${x._counts.warn?` · ${x._counts.warn} warning${x._counts.warn>1?'s':''}`:''}</span></button>`; }).join('');
   return `<div class="md"><div><div style="margin-bottom:8px">${reviewToggle()}</div><nav class="plist" aria-label="Poles">${list}${FIL.review&&!L.length?`<p class="muted">${FIL.review==='edited'?'No PoleForeman reports show signs of editing.':'No poles need review.'}</p>`:''}</nav></div><div class="detail">${s&&L.length?poleView(s):''}</div></div>`;
 }
+// the field survey for one pole, from the KMZ; damage counts above zero stand out
+const KMZ_SKIP = /^(DLOC Number|Time Bucket|Internal Note)$/i, KMZ_DAMAGE = /damage|damaged|bad |missing|loose|deteriorat|flashed|vegetation/i;
+function kmzSection(m){
+  const f = Object.entries(m.fields).filter(([k,v])=>!KMZ_SKIP.test(k) && String(v).trim()!=='');
+  if (!f.length) return '';
+  const cell = ([k,v]) => { const flag = KMZ_DAMAGE.test(k) && pfNum(v)>0; return `<tr><td style="white-space:normal">${esc(k.replace(/\\/g,'/'))}</td><td style="white-space:normal">${flag?`<span class="pct warn">${esc(v)}</span>`:esc(v)}</td></tr>`; };
+  const n = Math.ceil(f.length/3), parts = [0,1,2].map(i=>f.slice(i*n,(i+1)*n)).filter(p=>p.length);
+  const hits = f.filter(([k,v])=>KMZ_DAMAGE.test(k) && pfNum(v)>0).length;
+  return `<div class="sec"><h3>Field survey (KMZ) <span class="muted sm">${esc(m.name||'')}${hits?` · ${hits} damage item${hits>1?'s':''} noted`:''}</span></h3><div class="grid3">${parts.map(p=>`<div class="tscroll"><table><tbody>${p.map(cell).join('')}</tbody></table></div>`).join('')}</div></div>`;
+}
 function poleView(s){
   const L=shownSt(), idx=L.findIndex(x=>x.id===s.id), d=s.d;
   const iss=ISS.filter(i=>i.pole===s.id).sort((a,b)=>({bad:0,warn:1,info:2}[a.sev]-{bad:0,warn:1,info:2}[b.sev]));
@@ -1990,6 +2053,7 @@ function poleView(s){
     h += `<div class="sec"><h3>Location</h3><div class="tscroll"><table><thead><tr><th>Source</th><th>DLOC</th><th class="num">Latitude</th><th class="num">Longitude</th><th class="num">From ${esc(ref?.[0]||'reference')}</th></tr></thead><tbody>${srcs.map(n=>{ const dl=(s._dlocs||[]).find(x=>x[0]===n), lc=(s._locs||[]).find(x=>x[0]===n); const dd = lc && ref && lc!==ref ? distFt(ref[1],ref[2],lc[1],lc[2]) : null;
       return `<tr><td>${esc(n)}</td><td>${dl?`<span class="${dl[1]!==s._dlocs[0][1]?'pct bad':''}">${esc(dl[1])}</span>`:'–'}</td><td class="num">${lc?lc[1]:'–'}</td><td class="num">${lc?lc[2]:'–'}</td><td class="num">${dd==null?'–':`<span class="${dd>S.coordFt?'pct bad':''}">${dd>5280?f1(dd/5280)+' mi':f1(dd)+' ft'}</span>`}</td></tr>`; }).join('')}</tbody></table></div></div>`;
   }
+  if (s.kmz) h += kmzSection(s.kmz);
   if (s.st){
     const sum = s.st.cus.reduce((a,c)=>a+(c.hours||0),0);
     const grp = c => c.wf==='I'?0:c.wf==='R'?1:c.wf==='T'?2:3;
