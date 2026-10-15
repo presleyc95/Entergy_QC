@@ -1063,13 +1063,17 @@ function crossChecks(add){
   const pnVal = WO?.meta.pnCostText ? pfNum(WO.meta.pnCostText.replace(/[.,](?=.*[.,])/g,'')) : null;
   if (WO?.meta.pnCostText && /\d\.\d{3}\./.test(WO.meta.pnCostText)) add(null,'info','Estimate',`Purpose & Necessity writes the total as $${WO.meta.pnCostText}`,'Should use a comma for thousands.');
   const stSum = ST ? Object.values(ST.stations).reduce((a,s)=>a+(s.hours||0),0) : null;
+  // where each value comes from: doc + the printed number to find (sums open the document without a search)
+  const stDoc = PKG.station || PKG.ifc, woDoc = PKG.wo;
+  const at = (d, find) => d ? docLoc(d, {page:1, find}) : null;
+  const atN = d => n => at(d, n==null?null:f2(n)), sum = d => () => at(d);
   EST = [
-    ['Total estimate', money, 0.02, [['Job cost total',J?.total],['Cost distribution total',D?.total],['WO approval amount',WO?.meta.approvals?.[0]],['Purpose & Necessity',pnVal]]],
-    ['On-site labor hours', f2, 0.02, [['Station details header',ST?.meta.onsite],['Sum of stations',stSum],['Job cost',J?.onsite],['Labor summary',Lb?.hours],['WO planned labor',WO?.labor[0]?.hours]]],
-    ['Labor cost', money, 0.02, [['Job cost',J?.labor],['Labor summary',Lb?.cost],['Cost distribution',D?.labor]]],
-    ['New material', money, 0.02, [['WO planned materials',WO?.meta.matTotal],['Sum of WO material lines',WO?.materials.length?WO.materials.reduce((a,m)=>a+(m.cost||0),0):null],['Material summary',M?.total],['Sum of material lines',M?.items.length?M.items.reduce((a,m)=>a+(m.cost||0),0):null],['Job cost new material',J?.newMat]]],
-    ['Services', money, 0.02, [['WO planned services',WO?.meta.svcTotal],['Job cost services',J?.services],['Station detail services',ST?.services.length?ST.services.reduce((a,x)=>a+(x.cost||0),0):null]]],
-  ].map(([name,fmt,tol,vals])=>{ const v=vals.filter(x=>x[1]!=null); const ref=v[0]?.[1]; return {name,fmt,vals:v.map(x=>[x[0],x[1],ref==null||Math.abs(x[1]-ref)<=tol]), ok:v.every(x=>ref==null||Math.abs(x[1]-ref)<=tol)}; });
+    ['Total estimate', money, 0.02, [['Job cost total',J?.total,atN(PKG.jobcost)],['Cost distribution total',D?.total,atN(PKG.costdist)],['WO approval amount',WO?.meta.approvals?.[0],atN(woDoc)],['Purpose & Necessity',pnVal,()=>at(woDoc, WO?.meta.pnCostText)]]],
+    ['On-site labor hours', f2, 0.02, [['Station details header',ST?.meta.onsite,atN(stDoc)],['Sum of stations',stSum,sum(stDoc)],['Job cost',J?.onsite,atN(PKG.jobcost)],['Labor summary',Lb?.hours,atN(PKG.labor)],['WO planned labor',WO?.labor[0]?.hours,atN(woDoc)]]],
+    ['Labor cost', money, 0.02, [['Job cost',J?.labor,atN(PKG.jobcost)],['Labor summary',Lb?.cost,atN(PKG.labor)],['Cost distribution',D?.labor,atN(PKG.costdist)]]],
+    ['New material', money, 0.02, [['WO planned materials',WO?.meta.matTotal,atN(woDoc)],['Sum of WO material lines',WO?.materials.length?WO.materials.reduce((a,m)=>a+(m.cost||0),0):null,sum(woDoc)],['Material summary',M?.total,atN(PKG.material)],['Sum of material lines',M?.items.length?M.items.reduce((a,m)=>a+(m.cost||0),0):null,sum(PKG.material)],['Job cost new material',J?.newMat,atN(PKG.jobcost)]]],
+    ['Services', money, 0.02, [['WO planned services',WO?.meta.svcTotal,atN(woDoc)],['Job cost services',J?.services,atN(PKG.jobcost)],['Station detail services',ST?.services.length?ST.services.reduce((a,x)=>a+(x.cost||0),0):null,sum(stDoc)]]],
+  ].map(([name,fmt,tol,vals])=>{ const v=vals.filter(x=>x[1]!=null); const ref=v[0]?.[1]; return {name,fmt,vals:v.map(x=>[x[0],x[1],ref==null||Math.abs(x[1]-ref)<=tol,x[2]?.(x[1])||null]), ok:v.every(x=>ref==null||Math.abs(x[1]-ref)<=tol)}; });
   EST.forEach(e=>{ if (!e.ok) add(null,'bad','Estimate',`${e.name} doesn't match across the estimate`, e.vals.map(v=>`${v[0]}: ${e.fmt(v[1])}`).join(' · ')); });
   if (WO?.meta.laborTotal!=null && J?.labor!=null && Math.abs(WO.meta.laborTotal-J.labor)>1) add(null,'info','Estimate',`WO planned labor (${money(WO.meta.laborTotal)}) differs from the estimate labor cost (${money(J.labor)})`, J.stationParams?.some(p=>p.rates==='OT') ? `The estimate uses OT labor rates on ${[...new Set(J.stationParams.filter(p=>p.rates==='OT').map(p=>p.id))].join(', ')}.` : '');
   /* materials vs design */
@@ -2120,7 +2124,7 @@ function wireSketch(){
 /* estimate */
 function renderEstimate(){
   if (!EST.some(e=>e.vals.length) && !ST) return `<p class="muted">Add the Job Cost, Cost Distribution, Labor and Material summaries and the Work Order Details to reconcile the estimate.</p>`;
-  const rec = EST.filter(e=>e.vals.length).map(e=>`<tr><td><b style="font-weight:600">${esc(e.name)}</b></td><td style="white-space:normal">${e.vals.map(v=>`<span class="kv ${v[2]?'':'bad'}"><span class="muted">${esc(v[0])}</span> ${esc(e.fmt(v[1]))}</span>`).join('')}</td><td>${e.vals.length<2?'<span class="pill none">one source</span>':e.ok?'<span class="pill ok">Match</span>':'<span class="pill bad">Mismatch</span>'}</td></tr>`).join('');
+  const rec = EST.map((e,ei)=>!e.vals.length?'':`<tr><td><b style="font-weight:600">${esc(e.name)}</b></td><td style="white-space:normal">${e.vals.map((v,vi)=>{ const inner=`<span class="muted">${esc(v[0])}</span> ${esc(e.fmt(v[1]))}`; return v[3] ? `<button class="kv ${v[2]?'':'bad'}" data-est="${ei}|${vi}" title="Open where this is read from">${inner}</button>` : `<span class="kv ${v[2]?'':'bad'}">${inner}</span>`; }).join('')}</td><td>${e.vals.length<2?'<span class="pill none">one source</span>':e.ok?'<span class="pill ok">Match</span>':'<span class="pill bad">Mismatch</span>'}</td></tr>`).join('');
   const mc = MATCHK.map(m=>`<tr><td>${esc(m.item)}</td><td class="num">${m.design}</td><td class="num">${m.mat}</td><td>${m.ok?'<span class="pill ok">OK</span>':`<span class="pill ${m.sev}">Check</span>`}</td></tr>`).join('');
   const sh = STN.filter(s=>s.st).map(s=>{ const sum=s.st.cus.reduce((a,c)=>a+(c.hours||0),0); return `<tr><td><button class="link" data-pole="${esc(s.id)}">${esc(s.id)}</button></td><td class="num">${f2(s.st.hours)}</td><td class="num">${f2(sum)}</td><td class="num">${s.st.cus.length}</td><td>${Math.abs(sum-s.st.hours)>0.02?'<span class="pill bad">Off</span>':'<span class="pill ok">OK</span>'}</td></tr>`; }).join('');
   const mats = PKG.material?.data.items || WO?.materials || [];
@@ -2269,6 +2273,7 @@ $('#view').addEventListener('click', e=>{
   if ((x=t('[data-stn]'))){ CUR=x.dataset.stn; render(); return; }
   if ((x=t('[data-pole]'))){ const id=x.dataset.pole; CUR = STN.find(s=>s.id===id) ? id : (PF2ST[id]||id); FIL.review=false; TAB='poles'; render(); window.scrollTo({top:$('.panel').offsetTop-60}); return; }
   if ((x=t('[data-iss]'))){ gotoIssue(ISS[+x.dataset.iss]); return; }
+  if ((x=t('[data-est]'))){ const [ei,vi]=x.dataset.est.split('|').map(Number); gotoIssue({loc:EST[ei]?.vals[vi]?.[3]}); return; }
   if ((x=t('[data-orig]'))){ openOriginal(x.dataset.orig); return; }
   if ((x=t('[data-xlsx]'))){ exportExcel(); return; }
   if ((x=t('[data-sc]'))){ exportScorecard(); return; }

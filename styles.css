@@ -166,6 +166,9 @@ tr.click{cursor:pointer}
 @media (max-width:520px){.grid2{grid-template-columns:minmax(0,1fr)}}
 .kv{display:inline-flex;gap:6px;align-items:baseline;border:1px solid var(--rule);border-radius:6px;padding:2px 8px;margin:2px 6px 2px 0;font-size:13px;white-space:nowrap}
 .kv.bad{border-color:var(--bad);background:var(--bad-soft)}
+button.kv{background:none;color:inherit;font-family:inherit;cursor:pointer}
+button.kv:hover{border-color:var(--blue)}
+button.kv.bad{background:var(--bad-soft)}
 .note{border:1px solid var(--rule);border-radius:8px;padding:10px 12px;background:var(--bg);font-size:14px}
 .note b{display:block;font-family:var(--cond);font-size:15px;margin-bottom:4px}
 .note p{margin:3px 0}
